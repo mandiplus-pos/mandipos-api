@@ -8,7 +8,7 @@ V=${1:?version, e.g. 0.1.0}
 APP="MandiPlus Dashboard"; X=""
 if [[ ${2:-} == new ]]; then
   APP="MandiPlus Dashboard New"
-  X="-X 'main.appName=$APP' -X main.portal=https://mandipos-admin-beta.onrender.com/ -X main.flavor=desktop-new"
+  X="-X 'main.appName=$APP' -X main.portal=https://mandipos-portal-beta.onrender.com/ -X main.flavor=desktop-new"
 fi
 T=/Users/omi/mandi/tmp/toolchain
 export GOROOT=$T/go GOPATH=$T/gopath GOCACHE=$T/gocache PATH=$T/go/bin:$PATH GOFLAGS=-mod=mod

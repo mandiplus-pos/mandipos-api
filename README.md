@@ -62,8 +62,8 @@ One environment, no staging.
 
 | | |
 |---|---|
-| URL | https://mandipos-api.onrender.com |
-| Render | service `mandipos-api` (`srv-daopc65g1s2s7383q00g`), Standard, Singapore, workspace `tea-d57p78u3jp1c73b3rn5g` |
+| URL | https://mandipos-server.onrender.com |
+| Render | service `mandipos-server` (`srv-dbvliv8n74is739v5meg`), Free, Singapore, workspace `tea-d8l4kinavr4c73evvqtg` (om@mandiplus.com); portals `mandipos-portal` / `mandipos-portal-beta` |
 | Neon | project `mandipos` (`proud-violet-83797826`), branch `main` (`br-young-sound-b33uyuqp`), always on, 7-day restore |
 | Code | public repo `github.com/ombhojane10/mandipos-api`, branch `main` |
 | Secrets | gitignored `.env.production` (and Render's env settings) |

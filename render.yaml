@@ -50,16 +50,16 @@ envVarGroups:
 
 services:
   - type: web
-    name: mandipos-api
+    name: mandipos-server   # om@mandiplus.com workspace since 2026-11-20 (was mandipos-api on the shared MandiPlus account)
     runtime: node
     region: singapore
-    plan: standard
+    plan: free              # 512 MB; peak use ~250 MB. Free = 750 h/month per workspace: keep it the only free web service there.
     branch: main
-    # Every merge to main deploys by itself (owner, 2026-11-12), and the start command runs new
-    # migrations on live Neon. Make the Neon backup branch BEFORE merging a PR with a migration.
-    autoDeploy: true
+    # Off on mandipos-server (2026-11-20): someone with Render access triggers each deploy, and the
+    # start command runs new migrations on live Neon. Make the Neon backup branch BEFORE deploying a migration.
+    autoDeploy: false
     buildCommand: pnpm install --frozen-lockfile && pnpm build
-    startCommand: node scripts/migrate.mjs && node --max-old-space-size=1536 dist/main.js
+    startCommand: node scripts/migrate.mjs && node --max-old-space-size=384 dist/main.js
     healthCheckPath: /healthz
     envVars:
       - key: NODE_VERSION

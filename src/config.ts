@@ -79,14 +79,14 @@ const schema = z
     // Which provider opens new DigiLocker sessions; unset = Sandbox when its keys are set, else Surepass.
     KYC_DIGILOCKER_PROVIDER: z.enum(['sandbox', 'surepass']).optional(),
     // Where DigiLocker sends the grahak back; the terminal closes its page on this address.
-    PUBLIC_URL: z.string().default('https://mandipos-api.onrender.com'),
+    PUBLIC_URL: z.string().default('https://mandipos-server.onrender.com'),
     /**
      * Who may sign in to the MandiPlus admin portal (approve shops, read any shop's books):
      * comma-separated 10-digit mobiles, OTP by SMS like the app. Empty = nobody.
      */
     ADMIN_PHONES: z.string().default(''),
     // Web origins allowed to call the API from a browser: the admin portal. Comma-separated.
-    ADMIN_ORIGINS: z.string().default('https://mandipos-admin.onrender.com'),
+    ADMIN_ORIGINS: z.string().default('https://mandipos-portal.onrender.com'),
     /**
      * The voice assistant ("Bolo"): Gemini on Vertex AI, the same project and API key as the
      * MandiPlus backend. Unset key = the app's mic says voice is not switched on.

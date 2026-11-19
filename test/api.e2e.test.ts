@@ -1818,9 +1818,9 @@ describe('shop approval and the admin portal', () => {
   });
 
   it('answers the admin portal’s browser, and no other site', async () => {
-    const ok = await http().options('/v1/admin/shops').set('Origin', 'https://mandipos-admin.onrender.com')
+    const ok = await http().options('/v1/admin/shops').set('Origin', 'https://mandipos-portal.onrender.com')
       .set('Access-Control-Request-Method', 'GET').set('Access-Control-Request-Headers', 'authorization');
-    expect(ok.headers['access-control-allow-origin']).toBe('https://mandipos-admin.onrender.com');
+    expect(ok.headers['access-control-allow-origin']).toBe('https://mandipos-portal.onrender.com');
     const other = await http().get('/healthz').set('Origin', 'https://evil.example');
     expect(other.headers['access-control-allow-origin']).toBeUndefined();
   });

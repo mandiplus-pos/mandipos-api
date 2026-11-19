@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const liveAPI = "https://mandipos-api.onrender.com"
+const liveAPI = "https://mandipos-server.onrender.com"
 
 // Which app this build is, set at build time (build.sh): the Tally-look portal ("MandiPlus
 // Dashboard", releases flavor 'desktop') or the new-look beta ("MandiPlus Dashboard New",
@@ -21,7 +21,7 @@ const liveAPI = "https://mandipos-api.onrender.com"
 // computer can keep both.
 var (
 	appName = "MandiPlus Dashboard"
-	portal  = "https://mandipos-admin.onrender.com/"
+	portal  = "https://mandipos-portal.onrender.com/"
 	flavor  = "desktop"
 )
 

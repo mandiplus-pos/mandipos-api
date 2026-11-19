@@ -1,6 +1,6 @@
 # MandiPlus Dashboard (Windows)
 
-The MandiPOS owners' portal (https://mandipos-admin.onrender.com, code in `mandipos-api/admin`) in
+The MandiPOS owners' portal (https://mandipos-portal.onrender.com, code in `mandipos-api/admin`) in
 its own window. Go + WebView2 (wailsapp/go-webview2 bindings, no CGO), cross-compiled on the Mac.
 
 - The window loads the live portal, so every portal deploy reaches the app at once.

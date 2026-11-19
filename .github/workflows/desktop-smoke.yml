@@ -30,7 +30,7 @@ permissions:
 env:
   FLAVOR: ${{ inputs.flavor }}
   APPNAME: ${{ inputs.flavor == 'desktop-new' && 'MandiPlus Dashboard New' || 'MandiPlus Dashboard' }}
-  LDX: ${{ inputs.flavor == 'desktop-new' && '-X ''main.appName=MandiPlus Dashboard New'' -X main.portal=https://mandipos-admin-beta.onrender.com/ -X main.flavor=desktop-new' || '' }}
+  LDX: ${{ inputs.flavor == 'desktop-new' && '-X ''main.appName=MandiPlus Dashboard New'' -X main.portal=https://mandipos-portal-beta.onrender.com/ -X main.flavor=desktop-new' || '' }}
 jobs:
   smoke:
     runs-on: windows-latest
@@ -82,7 +82,7 @@ jobs:
       - name: Download the published exe
         if: ${{ !inputs.build }}
         run: |
-          $r = Invoke-WebRequest "https://mandipos-api.onrender.com/v1/public/app/download?flavor=$env:FLAVOR" -OutFile app.exe -PassThru
+          $r = Invoke-WebRequest "https://mandipos-server.onrender.com/v1/public/app/download?flavor=$env:FLAVOR" -OutFile app.exe -PassThru
           "version: $($r.Headers['X-App-Version'])"
 
       - name: About the exe
