@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { Pool, PoolClient, QueryResultRow } from 'pg';
 import { config } from '../config';
 
@@ -6,12 +6,22 @@ export type Tx = PoolClient;
 
 @Injectable()
 export class Db implements OnModuleDestroy {
+  private readonly log = new Logger('Db');
+
   readonly pool = new Pool({
     connectionString: config().DATABASE_URL,
     max: 10,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
   });
+
+  constructor() {
+    // When Neon restarts the compute (maintenance, a settings change) it terminates every
+    // connection, and pg reports each idle one as an 'error' event on the pool. Unheard, that
+    // event kills the process; heard, pg has already dropped the dead client and the next
+    // query simply opens a new connection.
+    this.pool.on('error', (err) => this.log.warn(`idle database connection lost: ${err.message}`));
+  }
 
   async onModuleDestroy() {
     await this.pool.end();
@@ -27,6 +37,14 @@ export class Db implements OnModuleDestroy {
 
   async tx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
+    // A connection that dies while checked out emits 'error' on the client itself, not the pool;
+    // hear it here (the failing query rejects on its own) and throw that connection away.
+    let broken: Error | undefined;
+    const onError = (err: Error) => {
+      broken = err;
+      this.log.warn(`database connection lost mid-transaction: ${err.message}`);
+    };
+    client.on('error', onError);
     try {
       await client.query('BEGIN');
       const result = await fn(client);
@@ -36,7 +54,8 @@ export class Db implements OnModuleDestroy {
       await client.query('ROLLBACK').catch(() => undefined);
       throw err;
     } finally {
-      client.release();
+      client.removeListener('error', onError);
+      client.release(broken);
     }
   }
 
