@@ -5,7 +5,7 @@
 export type Report = 'dashboard' | 'daybook' | 'cashbook' | 'outstanding' | 'ledger' | 'suppliers' | 'stock' | 'items' | 'team' | 'settings' | 'register' | 'munafa' | 'vasooli' | 'gaadis' | 'bhav' | 'nigrani'
   | 'dispatch' | 'pata' | 'commission' | 'beejak' | 'creditors' | 'laddan' | 'apmc' | 'mazdoori' | 'bolo' | 'bankjama'
   | 'company' | 'products' | 'groups' | 'areas' | 'stores' | 'heads' | 'openings' | 'crates' | 'coldstore'
-  | 'gl' | 'tb' | 'multi' | 'chithi' | 'big' | 'salepurchase' | 'purcha' | 'backup'
+  | 'gl' | 'tb' | 'balancesheet' | 'pnl' | 'multi' | 'chithi' | 'big' | 'salepurchase' | 'purcha' | 'backup'
   | 'jv' | 'cn' | 'invoices' | 'bikri'
   // Cheeku's own desk (its copies of the grapes reports).
   | 'cheeku-dispatch' | 'cheeku-pata' | 'cheeku-commission' | 'cheeku-beejak' | 'cheeku-creditors' | 'cheeku-laddan' | 'cheeku-apmc' | 'cheeku-mazdoori'
@@ -22,7 +22,7 @@ export type Route =
   | { page: 'admin'; shopId?: string }
 
 const REPORTS: Report[] = ['dashboard', 'daybook', 'cashbook', 'outstanding', 'ledger', 'suppliers', 'stock', 'items', 'team', 'settings', 'register', 'munafa', 'vasooli', 'gaadis', 'bhav', 'nigrani', 'dispatch', 'pata', 'commission', 'beejak', 'creditors', 'laddan', 'apmc', 'mazdoori', 'bolo', 'bankjama',
-  'company', 'products', 'groups', 'areas', 'stores', 'heads', 'openings', 'crates', 'coldstore', 'gl', 'tb', 'multi', 'chithi', 'big', 'salepurchase', 'purcha', 'backup', 'jv', 'cn', 'invoices', 'bikri',
+  'company', 'products', 'groups', 'areas', 'stores', 'heads', 'openings', 'crates', 'coldstore', 'gl', 'tb', 'balancesheet', 'pnl', 'multi', 'chithi', 'big', 'salepurchase', 'purcha', 'backup', 'jv', 'cn', 'invoices', 'bikri',
   'cheeku-dispatch', 'cheeku-pata', 'cheeku-commission', 'cheeku-beejak', 'cheeku-creditors', 'cheeku-laddan', 'cheeku-apmc', 'cheeku-mazdoori']
 
 export function parse(hash: string): Route {

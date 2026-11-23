@@ -3331,6 +3331,55 @@ describe('reports (General Ledger, Trial Balance, Ledger Multiple, big transacti
     await http().post(`${base}/books/khatas`).set(other.w).send({ ids: [g.id], from: d, to: d }).expect(403);
   });
 
+  it('reads the Balance Sheet off the Trial Balance: it balances, ties out, and the P&L is Munafa', async () => {
+    const { w, base } = await web('9845700021', { name: 'BS Nariyal' });
+    const d = istDay();
+    const g = (await http().post(`${base}/entries/grahak`).set(w).send({ name: 'Suresh', openingPaise: 300000 }).expect(201)).body;
+    await http().post(`${base}/entries/gaadi`).set(w).send({ number: 'KA02', supplier: 'Tiptur Traders', freightPaise: 10000, lots: [{ brandName: 'Tiptur', grade: '1', qty: 50, ratePaise: 1000 }] }).expect(201);
+    const truckId = (await http().get(`${base}/stock`).set(w).expect(200)).body.rows[0].truckId;
+    await http().post(`${base}/entries/parchi`).set(w).send({ buyerId: g.id, truckId, lines: [{ grade: '1', qty: 10, ratePaise: 2000 }], pay: 'credit', packing: 'loose' }).expect(201);
+    await http().post(`${base}/entries/parchi`).set(w).send({ buyerName: 'Cash', truckId, lines: [{ grade: '1', qty: 5, ratePaise: 2000 }], pay: 'cash', packing: 'loose' }).expect(201);
+    await http().post(`${base}/entries/vasooli`).set(w).send({ buyerId: g.id, cashPaise: 4000, upiPaise: 1000 }).expect(201);
+    await http().post(`${base}/entries/daybook`).set(w).send({ direction: 'out', category: 'kharcha', mode: 'cash', amountPaise: 500 }).expect(201);
+    await http().post(`${base}/entries/supplier-payment`).set(w).send({ supplier: 'Tiptur Traders', mode: 'cash', amountPaise: 20000 }).expect(201);
+
+    const tb = (await http().get(`${base}/books/trial-balance?on=${d}`).set(w).expect(200)).body;
+    const bs = (await http().get(`${base}/books/balance-sheet?on=${d}`).set(w).expect(200)).body;
+    // It balances: Lena = Dena, nothing hidden.
+    expect(bs.totals.balanced).toBe(true);
+    expect(bs.totals.lenaPaise).toBe(bs.totals.denaPaise);
+    expect(bs.totals.assetsPaise + Math.max(bs.suspense.paise, 0)).toBe(bs.totals.liabilitiesPaise + bs.profit.profitPaise + Math.max(-bs.suspense.paise, 0));
+    // Its totals are the Trial Balance's for the same day, group by group.
+    const net = (k: string) => { const x = tb.groups.find((y: any) => y.key === k); return x ? x.dr - x.cr : 0; };
+    expect(bs.trialBalance).toEqual({ dr: tb.totals.dr, cr: tb.totals.cr, differencePaise: tb.differencePaise });
+    expect(bs.totals.assetsPaise).toBe(['cash', 'bank', 'debtors', 'laddan', 'assets'].reduce((t, k) => t + net(k), 0));
+    expect(bs.totals.liabilitiesPaise).toBe(-['creditors', 'liabilities', 'capital'].reduce((t, k) => t + net(k), 0));
+    expect(bs.profit.profitPaise).toBe(-['sales', 'income', 'purchase', 'expense'].reduce((t, k) => t + net(k), 0));
+    expect(bs.suspense.paise).toBe(net('suspense'));
+    expect(bs.suspense.untalliedPaise).toBe(0);
+    // The figures themselves: bikri ₹300, kharid ₹500 + bhada ₹100, kharcha ₹5; Suresh owes ₹3,000 + ₹200 − ₹50;
+    // Tiptur is owed ₹600 − ₹200; the purana udhaar is the suspense on the Dena side.
+    expect(bs.profit).toMatchObject({ salesPaise: 30000, purchasePaise: 60000, expensePaise: 500, profitPaise: 30000 - 60000 - 500 });
+    expect(bs.assets.find((x: any) => x.key === 'debtors')).toMatchObject({ paise: 300000 + 20000 - 5000 });
+    expect(bs.liabilities.find((x: any) => x.key === 'creditors')).toMatchObject({ paise: 40000 });
+    expect(bs.suspense.paise).toBe(-300000);
+    expect(bs.suspense.rows).toEqual([expect.objectContaining({ key: 'diff:opening_grahak', paise: -300000 })]);
+    // A day before anything: all zeros, still balanced.
+    expect((await http().get(`${base}/books/balance-sheet?on=2020-01-01`).set(w).expect(200)).body.totals).toMatchObject({ lenaPaise: 0, denaPaise: 0, balanced: true });
+
+    // P&L over a period is the Munafa report, with Sale Purchase's month lines under it.
+    const pl = (await http().get(`${base}/books/pnl?from=${d}&to=${d}`).set(w).expect(200)).body;
+    const m = (await http().get(`${base}/munafa?from=${d}&to=${d}`).set(w).expect(200)).body;
+    expect(pl).toMatchObject({ salesPaise: m.salesPaise, grossPaise: m.grossPaise, expensePaise: m.expensePaise, netPaise: m.netPaise, kharidPaise: 60000 });
+    expect(pl.months).toEqual([expect.objectContaining({ key: d.slice(0, 7), salesPaise: 30000, netPaise: m.netPaise })]);
+    await http().get(`${base}/books/pnl?from=${d}&to=2020-01-01`).set(w).expect(400);
+
+    // Another shop's owner gets neither.
+    const other = await web('9845700022', { name: 'Other BS' });
+    await http().get(`${base}/books/balance-sheet`).set(other.w).expect(403);
+    await http().get(`${base}/books/pnl?from=${d}&to=${d}`).set(other.w).expect(403);
+  });
+
   it('balances a grapes shop on beejaks: creditors as Supplier creditors, deductions as income, openings as the difference', async () => {
     const { w, base } = await web('9845700002', { name: 'TB Angoor', commodity: 'angoor' });
     const d = istDay();

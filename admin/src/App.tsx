@@ -28,7 +28,7 @@ import { MENU_EVENT } from './hooks'
 import { Creditors, Laddan } from './pages/Creditors'
 import { Areas, Company, Heads, Openings, ProductGroups, Products, Stores } from './pages/Masters'
 import { Crates, StoreEntry } from './pages/CrateStore'
-import { Backup, BigTransactions, GeneralLedger, Purcha, SalePurchase, TrialBalance } from './pages/Books'
+import { BalanceSheet, Backup, BigTransactions, GeneralLedger, ProfitLoss, Purcha, SalePurchase, TrialBalance } from './pages/Books'
 import { Chithi, LedgerMultiple } from './pages/Letters'
 import { BikriEntry, CreditNotes, JournalVouchers, TaxInvoices } from './pages/Vouchers'
 import { Apmc, Beejaks, Commission, Dispatch, GaadiPata, Mazdoori } from './pages/Angoor'
@@ -100,6 +100,8 @@ export const REPORTS: { group: string; items: { report: Report; label: string; k
   { group: t('Reports'), items: [
     { report: 'gl', label: t('General Ledger'), key: '', icon: I.ILedger },
     { report: 'tb', label: t('Trial Balance'), key: '', icon: I.IRupee },
+    { report: 'balancesheet', label: t('Balance Sheet'), key: '', icon: I.IBook },
+    { report: 'pnl', label: t('P&L'), key: '', icon: I.IChart },
     { report: 'multi', label: t('Ledger Multiple'), key: '', icon: I.IBook },
     { report: 'chithi', label: t('Chithi / Schedule'), key: '', icon: I.IInbox },
     { report: 'big', label: t('Bade len-den'), key: '', icon: I.IWallet },
@@ -462,7 +464,7 @@ const NO_CHEEKU_TOOLS = new Set<Report>([
   // Cash / Bank Book, Bank Jama Parchi, Journal Voucher, Credit Note, Generate Invoices, Aaj ka Bhav, Store Entry, Nigrani.
   'cashbook', 'bankjama', 'jv', 'cn', 'invoices', 'bhav', 'coldstore', 'nigrani',
   // General Ledger, Trial Balance, Ledger Multiple, Chithi / Schedule, Bade len-den.
-  'gl', 'tb', 'multi', 'chithi', 'big',
+  'gl', 'tb', 'balancesheet', 'pnl', 'multi', 'chithi', 'big',
   // Masters: Product Master, Product Group, Area Master, Ledger Master, Store Master, Opening balance.
   'products', 'groups', 'areas', 'heads', 'stores', 'openings',
 ])
@@ -513,6 +515,8 @@ function ReportPage({ shopId, report }: { shopId: string; report: Report }) {
     case 'coldstore': return <StoreEntry key={shopId} shopId={shopId} />
     case 'gl': return <GeneralLedger key={shopId} shopId={shopId} />
     case 'tb': return <TrialBalance key={shopId} shopId={shopId} />
+    case 'balancesheet': return <BalanceSheet key={shopId} shopId={shopId} />
+    case 'pnl': return <ProfitLoss key={shopId} shopId={shopId} />
     case 'multi': return <LedgerMultiple key={shopId} shopId={shopId} />
     case 'chithi': return <Chithi key={shopId} shopId={shopId} />
     case 'big': return <BigTransactions key={shopId} shopId={shopId} />

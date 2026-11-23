@@ -1329,6 +1329,21 @@ export class AdminController {
     return this.books.purcha(mine(v, id), r.from, r.to);
   }
 
+  // ---------------------------------------------------------------- Books: Balance Sheet and P&L (read-only)
+
+  /** Lena / Dena as on a date, read off that day's Trial Balance groups, so the two always tie out. */
+  @Get('shops/:id/books/balance-sheet')
+  balanceSheet(@See() v: Viewer, @Param('id') id: string, @Query() query: unknown) {
+    return this.books.balanceSheet(booksViewer(v, id), parse(OnQuery, query).on ?? todayIst());
+  }
+
+  /** Profit and loss over a period: the Munafa report's own sums, with month lines. */
+  @Get('shops/:id/books/pnl')
+  pnl(@See() v: Viewer, @Param('id') id: string, @Query() query: unknown) {
+    const r = parse(Range, query);
+    return this.books.pnl(booksViewer(v, id), r.from, r.to);
+  }
+
   /** The shop's complete books as one Excel workbook, streamed. Read-only. */
   @Get('shops/:id/books/backup')
   async backup(@See() v: Viewer, @Param('id') id: string, @Res() res: Response) {
@@ -1359,4 +1374,19 @@ export function mine(v: Viewer, id: string): string {
 
 function adminOnly(v: Viewer) {
   if (!v.admin) throw new ForbiddenException('Yeh sirf MandiPlus admin dekh sakte hain');
+}
+
+/**
+ * The read-only books handlers: what a "may view books" login (a partner, later) could be let
+ * through AdminGuard for, as LABOUR_HANDLERS is for a labour login.
+ */
+export const BOOKS_VIEW_HANDLERS = new Set(['bookAccounts', 'bookLedger', 'trialBalance', 'bookParties', 'bigTransactions', 'salePurchase', 'purcha', 'balanceSheet', 'pnl']);
+
+/**
+ * Who may read a shop's books (Balance Sheet, P&L): today whoever may open the shop at all. A
+ * read-only viewer of the books (a partner) belongs here, not in mine(), so it can see books
+ * without being able to write anything else.
+ */
+export function booksViewer(v: Viewer, id: string): string {
+  return mine(v, id);
 }
