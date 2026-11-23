@@ -17,6 +17,7 @@ import type { Period } from '../period'
 import { isCheeku } from '../commodity'
 import { cheekuCreditorReport } from '../cheeku'
 import { CheekuBeejakSheet } from './Cheeku'
+import { editEntry } from '../entries/kinds'
 
 // ================================================================ shared bits
 
@@ -781,6 +782,10 @@ export function Purcha({ shopId }: { shopId: string }) {
       freightPaise: a.freightPaise + x.freightPaise, beejakPaise: a.beejakPaise + x.beejakPaise, pending: a.pending + x.pending }),
     { gaadis: 0, boxes: 0, kg: 0, kharidPaise: 0, freightPaise: 0, beejakPaise: 0, pending: 0 })
   const open = (g: PurchaGaadi) => { if (grapes) setBeejak(g.truckId); else if (cheeku) setBeejak(g.truckId); else if (g.supplierKey) location.hash = href({ page: 'supplier', shopId, key: g.supplierKey }) }
+  // Nariyal and amrud: the gaadi's number (typed wrong when it came) is changed from its row. Grapes
+  // and cheeku change theirs from their own Gaadi pages.
+  const editable = !grapes && !cheeku
+  const edit = (g: PurchaGaadi) => editEntry({ kind: 'gaadi', gaadi: { truckId: g.truckId, number: g.number, supplier: g.supplier, location: g.location, freightPaise: g.freightPaise, qualities: [] } })
 
   useExport(data ? () => ({
     style: 'book' as const, title: t('Purcha'), dateLine: dayRange(data.from, data.to), file: fileName('Purcha', data.from, data.to),
@@ -823,6 +828,7 @@ export function Purcha({ shopId }: { shopId: string }) {
                     <tr key={g.truckId} data-row tabIndex={0} onClick={() => open(g)} onKeyDown={(e) => { if (e.key === 'Enter') open(g) }}>
                       <td className="opt-col muted">{shortDate(g.date)}</td>
                       <td className="main-col"><b className="name">{g.number}</b> <span className="muted">{g.supplier}</span>
+                        {editable && <> <button type="button" className="btn line sm" onClick={(e) => { e.stopPropagation(); edit(g) }} onKeyDown={(e) => e.stopPropagation()}>{t('Badlein')}</button></>}
                         <small><span className="show-sm">{shortDate(g.date)} · {maal(g)}</span>{g.location ? <span className="hide-sm">{g.location}</span> : null}</small></td>
                       <td className="opt-col">{maal(g)}<small className="muted" style={{ display: 'block' }}>{kgText(g.kg)}</small></td>
                       <td className="num opt-col">{count(g.boxes)}</td>

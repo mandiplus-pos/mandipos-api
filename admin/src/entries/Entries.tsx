@@ -526,6 +526,7 @@ function GaadiForm({ shopId, onClose, onDone, editing }: FormProps & { editing?:
   const total = lots.reduce((s, l) => s + l.qty * l.ratePaise, 0) + freight
   if (o?.commodity === 'angoor') return <AngoorGaadiForm shopId={shopId} o={o} editing={editing} onClose={onClose} onDone={onDone} />
   if (o && isCheeku(o.commodity)) return <CheekuGaadiForm shopId={shopId} o={o} editing={editing} onClose={onClose} onDone={onDone} />
+  if (o && editing) return <GaadiEditForm shopId={shopId} amrud={o.commodity === 'amrud'} suppliers={o.suppliers} editing={editing} onClose={onClose} onDone={onDone} />
   if (o && o.commodity && o.commodity !== 'nariyal') return <Sheet title={t('Nayi Gaadi')} onClose={onClose} onSave={onClose} saving={false} error="" saveLabel={t('Theek hai')}><p className="muted">{t('Amrud ki party app se jodein.')}</p></Sheet>
   return (
     <Sheet title={t('Nayi Gaadi')} onClose={onClose} saving={saving} error={error}
@@ -564,6 +565,41 @@ function GaadiForm({ shopId, onClose, onDone, editing }: FormProps & { editing?:
       </div>
       <Field label={t('Bhada (optional)')}><Money value={freight} onChange={setFreight} /></Field>
       <div className="total-line"><span>{t('{n} dana', { n: count(lots.reduce((s, l) => s + l.qty, 0)) })}</span><b className="money">{rupees(total)}</b></div>
+    </Sheet>
+  )
+}
+
+/**
+ * A nariyal or amrud gaadi changed: its number (a number typed wrong when it came), and a nariyal
+ * gaadi's supplier. Its maal stays the app's to change. Amrud: the party's name is its khata, so
+ * it is renamed from the app (which moves it on every gaadi), never here. Bhada and place are not
+ * sent, so they stay as they are.
+ */
+function GaadiEditForm({ shopId, amrud, suppliers, editing, onClose, onDone }: {
+  shopId: string; amrud: boolean; suppliers: string[]; editing: EditGaadi; onClose: () => void; onDone: (msg: string) => void
+}) {
+  const { saving, error, setError, save } = useSave(onDone)
+  const [number, setNumber] = useState(editing.number === '-' ? '' : editing.number)
+  const [supplier, setSupplier] = useState(editing.supplier)
+  return (
+    <Sheet title={t('Gaadi badlein')} onClose={onClose} saving={saving} error={error}
+      onSave={() => {
+        const no = number.toUpperCase().replace(/\s+/g, '')
+        // Amrud: the vehicle is optional ("-" when none), as the app has it.
+        if (!no && !amrud) return setError(t('Gaadi number daalein'))
+        void save(`/v1/admin/shops/${shopId}/gaadi/${editing.truckId}`, { number: no || '-', supplier: amrud ? editing.supplier : supplier, lots: [] },
+          () => t('Gaadi {n} badal gayi', { n: no || '-' }))
+      }}>
+      <div className="row2">
+        <Field label={t('Gaadi number')}><input className="field" value={number} autoFocus maxLength={20} onChange={(e) => setNumber(e.target.value.toUpperCase())} placeholder="RJ14AB1234" /></Field>
+        {amrud ? <Field label={t('Party')}><input className="field" value={editing.supplier} readOnly disabled /></Field> : (
+          <Field label={t('Supplier')}>
+            <input className="field" list="gaadi-edit-sup" value={supplier} maxLength={120} onChange={(e) => setSupplier(e.target.value)} />
+            <datalist id="gaadi-edit-sup">{suppliers.map((s) => <option key={s} value={s} />)}</datalist>
+          </Field>
+        )}
+      </div>
+      <p className="muted">{amrud ? t('Party ka naam aur maal app se badlein.') : t('Maal aur ginti app se badlein.')}</p>
     </Sheet>
   )
 }

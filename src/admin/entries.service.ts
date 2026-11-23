@@ -892,29 +892,40 @@ export class EntriesService {
    * A grapes gaadi changed after it came, as the app's Gaadi screen does: number, supplier, where
    * it stands and bhada on the gaadi itself; a quality's boxes by the difference — more boxes as
    * another lot line at its own bhav and kg, fewer as a correction — and a new quality as a new lot.
+   *
+   * Nariyal and amrud gaadis (the website's plain gaadi form): the number (and supplier) only, with
+   * no lots — their grades and marks are the app's to change. Bhada and place left out of the
+   * request stay as they are; the truck row's nariyal-only columns (deal, Bada) are not sent, so
+   * the sync keeps them.
    */
   async editGaadi(phone: string, shopId: string, truckId: string, input: GaadiInput) {
     const number = input.number.toUpperCase().replace(/\s+/g, '');
     if (!number) throw new BadRequestException('Gaadi number daalein');
-    if (!input.supplier.trim()) throw new BadRequestException('Supplier ka naam daalein');
     const p = await this.device(phone, shopId);
     const now = new Date().toISOString();
-    const { truck, have, brands } = await this.db.withShop(shopId, async (tx) => {
-      const truck = (await tx.query<{ id: string; created_at: Date; arrived_at: Date; labour_paise: string; commission_paise: string; closed_at: Date | null }>(
-        `SELECT id, created_at, arrived_at, labour_paise, commission_paise, closed_at FROM trucks WHERE id = $1`, [truckId])).rows[0];
+    const { truck, have, brands, commodity } = await this.db.withShop(shopId, async (tx) => {
+      const truck = (await tx.query<{ id: string; created_at: Date; arrived_at: Date; supplier: string; freight_paise: string; location: string; labour_paise: string; commission_paise: string; closed_at: Date | null }>(
+        `SELECT id, created_at, arrived_at, supplier, freight_paise, location, labour_paise, commission_paise, closed_at FROM trucks WHERE id = $1`, [truckId])).rows[0];
       if (!truck) throw new NotFoundException('Gaadi nahi mili');
+      const commodity = (await tx.query<{ commodity: string }>(`SELECT commodity FROM shops WHERE id = $1`, [shopId])).rows[0]?.commodity ?? 'nariyal';
       const have = (await tx.query<{ brand_id: string; qty: string; rate: string; box_grams: number }>(
         `SELECT g.brand_id, SUM(g.received_qty) - COALESCE((SELECT SUM(qty) FROM spoilage s WHERE s.truck_id = $1 AND s.brand_id = g.brand_id AND s.kind = 'correction'), 0)
                   - ${STORE_BACK('$1', 'g.brand_id')} AS qty,
                 (array_agg(g.rate_paise ORDER BY g.created_at DESC))[1] AS rate, MAX(g.box_grams) AS box_grams
          FROM truck_grades g WHERE g.truck_id = $1 GROUP BY g.brand_id`, [truckId])).rows;
       const brands = (await tx.query<{ id: string; name: string; sort_order: number }>(`SELECT id, name, sort_order FROM brands`)).rows;
-      return { truck, have, brands };
+      return { truck, have, brands, commodity };
     });
+    const grapesOrCheeku = isAngoor(commodity) || isCheeku(commodity);
+    // A supplier is required where the gaadi is the party's (angoor, cheeku, amrud); a nariyal
+    // gaadi entered without one may stay without one.
+    if (!input.supplier.trim() && (commodity !== 'nariyal' || truck.supplier.trim())) throw new BadRequestException('Supplier ka naam daalein');
+    // Nariyal grades and amrud marks are not what this form's lots know (one grade a quality).
+    if (!grapesOrCheeku && input.lots.length) throw new BadRequestException('Is gaadi ka maal app se badlein');
     const items: PushItem[] = [{ table: 'trucks', txn: uuidv7(), row: {
       id: truck.id, created_at: truck.created_at.toISOString(), updated_at: now, number, supplier: input.supplier.trim(), arrived_at: truck.arrived_at.toISOString(),
-      freight_paise: input.freightPaise ?? 0, labour_paise: n(truck.labour_paise), commission_paise: n(truck.commission_paise),
-      closed_at: truck.closed_at?.toISOString() ?? null, location: (input.location ?? '').trim().slice(0, 80),
+      freight_paise: input.freightPaise ?? n(truck.freight_paise), labour_paise: n(truck.labour_paise), commission_paise: n(truck.commission_paise),
+      closed_at: truck.closed_at?.toISOString() ?? null, location: (input.location ?? truck.location ?? '').trim().slice(0, 80),
     } }];
     const day = todayIst();
     let order = brands.reduce((m, b) => Math.max(m, b.sort_order), 0) + 1;

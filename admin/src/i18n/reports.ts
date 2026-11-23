@@ -56,6 +56,9 @@ export const REPORTS: Record<string, readonly [string, string]> = {
 
   // Money pots and payment modes
   'Cash': ['Cash', 'नकद'],
+  'Cash bikri': ['Cash sales', 'नकद बिक्री'],
+  'UPI bikri': ['UPI sales', 'UPI बिक्री'],
+  'Udhaar bikri': ['Credit sales', 'उधार बिक्री'],
   'Galla': ['Counter cash', 'गल्ला'],
   'Galla (Cash)': ['Counter cash', 'गल्ला (नकद)'],
   'Office': ['Office', 'ऑफिस'],

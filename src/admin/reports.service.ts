@@ -323,10 +323,19 @@ export class ReportsService {
     const prevFrom = new Date(Date.parse(`${from}T00:00:00Z`) - len * 86_400_000).toISOString().slice(0, 10);
     return this.db.withShop(shopId, async (tx) => {
       const totals = async (a: string, b: string) => {
-        const s = (await tx.query<{ sales: string; slips: string }>(
-          `SELECT COALESCE(SUM(total_paise - rikshaw_paise), 0) AS sales, COUNT(*) AS slips FROM ${LIVE_BILLS} lb WHERE business_date BETWEEN $1 AND $2`, [a, b])).rows[0];
+        // How the period's slips were paid at the counter: cash, UPI, and what each wrote on udhaar
+        // that day (total less paid; vasooli taken since does not shrink it), as the app's Hisab.
+        // A slip keeps its own cash/UPI columns (CASH_PART/UPI_PART are the collections' split).
+        const s = (await tx.query<{ sales: string; slips: string; cash: string; upi: string; udhaar: string }>(
+          `SELECT COALESCE(SUM(total_paise - rikshaw_paise), 0) AS sales, COUNT(*) AS slips,
+                  COALESCE(SUM(cash_paise), 0) AS cash, COALESCE(SUM(upi_paise), 0) AS upi,
+                  COALESCE(SUM(GREATEST(0, total_paise - paid_paise)), 0) AS udhaar
+           FROM ${LIVE_BILLS} lb WHERE business_date BETWEEN $1 AND $2`, [a, b])).rows[0];
         const p = await this.purchases(tx, a, b);
-        return { salesPaise: n(s.sales), slips: n(s.slips), purchasePaise: p.reduce((t, x) => t + x.paise, 0), gaadis: p.reduce((t, x) => t + x.gaadis, 0) };
+        return {
+          salesPaise: n(s.sales), slips: n(s.slips), cashPaise: n(s.cash), upiPaise: n(s.upi), udhaarPaise: n(s.udhaar),
+          purchasePaise: p.reduce((t, x) => t + x.paise, 0), gaadis: p.reduce((t, x) => t + x.gaadis, 0),
+        };
       };
       const now = await totals(from, to);
       const before = await totals(prevFrom, prevDay(from));

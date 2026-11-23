@@ -194,6 +194,8 @@ const GaadiBody = z.object({
   lots: z.array(z.object({ brandId: z.uuid().optional(), brandName: z.string().trim().max(60).optional(), grade, qty: z.number().int().min(0).max(10_000_000), ratePaise: paise,
     boxGrams: z.number().int().min(0).max(1_000_000).optional() })).min(1).max(12),
 });
+/** A gaadi changed: as a new one, but a nariyal or amrud gaadi sends its number alone (no lots). */
+const GaadiEditBody = GaadiBody.extend({ lots: GaadiBody.shape.lots.unwrap().array().max(12).default([]) });
 export const BeejakBody = z.object({
   day: z.iso.date().optional(),
   bhav: z.array(z.object({ quality: z.string().max(60), ratePaise: paise })).max(50),
@@ -1171,10 +1173,10 @@ export class AdminController {
     return this.entries.pickup(v.phone, mine(v, id), parse(z.object({ billId: z.uuid(), qty: z.number().int().min(1).max(100000) }), body));
   }
 
-  /** A grapes gaadi changed: number, supplier, place, bhada, and each quality's boxes. */
+  /** A gaadi changed: number, supplier, place, bhada, and (grapes, cheeku) each quality's boxes. Nariyal and amrud: the number only. */
   @Post('shops/:id/gaadi/:truckId')
   editGaadi(@See() v: Viewer, @Param('id') id: string, @Param('truckId') truckId: string, @Body() body: unknown) {
-    return this.entries.editGaadi(v.phone, mine(v, id), parse(z.uuid(), truckId), parse(GaadiBody, body));
+    return this.entries.editGaadi(v.phone, mine(v, id), parse(z.uuid(), truckId), parse(GaadiEditBody, body));
   }
 
   /** Angoor: broken-box requests from the gaadi, and the accountant settling one (re-priced) or turning it down. */

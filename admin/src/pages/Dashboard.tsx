@@ -76,6 +76,15 @@ export function Dashboard({ shopId }: { shopId: string }) {
             <Kpi icon={<I.IWallet />} tone="red" label={t('Supplier (dena)')} value={rupees(data.d.payables.duePaise)} to={to('suppliers')}
               sub={t('{n} supplier', { n: count(data.d.payables.count) })} />
           </div>
+          {/* The period's bikri by how it was paid: cash and UPI at the counter, and what was written on udhaar that day. */}
+          <div className="grid g3">
+            <Kpi icon={<I.ICash />} tone="green" label={t('Cash bikri')} value={rupees(data.d.now.cashPaise)} to={to('daybook')}
+              sub={<Change now={data.d.now.cashPaise} before={data.d.before.cashPaise} />} />
+            <Kpi icon={<I.IRupee />} tone="blue" label={t('UPI bikri')} value={rupees(data.d.now.upiPaise)} to={to('daybook')}
+              sub={<Change now={data.d.now.upiPaise} before={data.d.before.upiPaise} />} />
+            <Kpi icon={<I.IUdhaar />} tone="amber" label={t('Udhaar bikri')} value={rupees(data.d.now.udhaarPaise)} to={to('daybook')}
+              sub={<Change now={data.d.now.udhaarPaise} before={data.d.before.udhaarPaise} />} />
+          </div>
 
           {angoor && <AngoorStrip shopId={shopId} from={period.from} to={period.to} />}
           {cheeku && <CheekuStrip shopId={shopId} from={period.from} to={period.to} />}
