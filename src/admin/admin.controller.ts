@@ -24,6 +24,7 @@ import { ColdStoreService } from './cold-store.service';
 import { BooksService } from './books.service';
 import { CN_REASONS, VouchersService } from './vouchers.service';
 import { GSTIN, InvoicesService } from './invoices.service';
+import { NariyalHisabService } from './nariyal-hisab.service';
 import { UdhaarAlertsService } from '../alerts/udhaar-alerts.service';
 import { PortalTurnBody, PortalVoiceService } from '../voice/portal-voice.service';
 import { RemindersService } from '../alerts/reminders.service';
@@ -359,7 +360,7 @@ export class AdminController {
     private readonly alerts: UdhaarAlertsService, private readonly reminders: RemindersService, private readonly creditors: CreditorsService,
     private readonly machines: MachinesService, private readonly deposits: DepositsService, private readonly masters: MastersService,
     private readonly crates: CratesService, private readonly coldStore: ColdStoreService, private readonly books: BooksService,
-    private readonly vouchers: VouchersService, private readonly invoices: InvoicesService,
+    private readonly vouchers: VouchersService, private readonly invoices: InvoicesService, private readonly nariyal: NariyalHisabService,
   ) {}
 
   // ---------------------------------------------------------------- Journal Voucher
@@ -1207,6 +1208,26 @@ export class AdminController {
   @Post('shops/:id/nariyal/returns')
   nariyalReturn(@See() v: Viewer, @Param('id') id: string, @Body() body: unknown) {
     return this.entries.nariyalReturn(v.phone, mine(v, id), parse(z.object({ billId: z.uuid() }), body).billId);
+  }
+
+  /** Nariyal Bhada: each gaadi's Bada for the days (arrived or paid off in them), paid or baaki, and from which book. */
+  @Get('shops/:id/nariyal/bhada')
+  nariyalBhada(@See() v: Viewer, @Param('id') id: string, @Query('from') from?: string, @Query('to') to?: string) {
+    const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+    return this.nariyal.bhada(mine(v, id), parse(day, from), parse(day, to ?? from));
+  }
+
+  /** Nariyal Supplier ledger: the suppliers to pick from (Purchase and Commission gaadis), with what is still to pay each. */
+  @Get('shops/:id/nariyal/suppliers')
+  nariyalSuppliers(@See() v: Viewer, @Param('id') id: string) {
+    return this.nariyal.suppliers(mine(v, id));
+  }
+
+  /** One nariyal supplier's ledger for the days: opening, gaadis, payments, kaat / baaki badla, running balance. */
+  @Get('shops/:id/nariyal/suppliers/:key/ledger')
+  nariyalSupplierLedger(@See() v: Viewer, @Param('id') id: string, @Param('key') key: string, @Query('from') from?: string, @Query('to') to?: string) {
+    const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+    return this.nariyal.ledger(mine(v, id), parse(SupplierKey, key), parse(day, from), parse(day, to ?? from));
   }
 
   /** "Scan galat tha": a Maal diya made by mistake, taken back. */

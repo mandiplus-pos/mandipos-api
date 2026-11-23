@@ -5,6 +5,7 @@ import path from 'node:path';
 import { Client } from 'pg';
 import request from 'supertest';
 import { uuidv7 } from '../src/common/uuid';
+import { createHash } from 'node:crypto';
 
 // A throwaway database, migrated as the owner, with the API connecting as the
 // restricted runtime role — the same split as production.
@@ -5147,6 +5148,65 @@ describe('nariyal gaadi deal', () => {
     const other = uuidv7();
     await http().post('/v1/sync/push').set(auth(cheeku)).send({ items: [truck(other, t1, { bada_paid_at: t1, bada_paid_by: 'Ashish' })] }).expect(200);
     expect(await paidOf(other)).toEqual({ at: null, by: null });
+  });
+
+  /** The app's Store.badaPayoutId: java.util.UUID.nameUUIDFromBytes("bada-paid/<truckId>"). */
+  const badaPayoutId = (truckId: string) => {
+    const b = createHash('md5').update(`bada-paid/${truckId}`).digest();
+    b[6] = (b[6] & 0x0f) | 0x30; b[8] = (b[8] & 0x3f) | 0x80;
+    const h = b.toString('hex');
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  };
+
+  it('shows the website Bhada page and a nariyal supplier ledger (Purchase maal, Commission beejak, payments, kaat)', async () => {
+    const phoneNo = '9877900007';
+    const shop = await registerShop(phoneNo, 'Nariyal Hisab');
+    const base = `/v1/admin/shops/${shop.me.shop.id}`;
+    await http().post('/v1/admin/auth/otp').send({ phone: phoneNo }).expect(204);
+    const w = auth((await http().post('/v1/admin/auth/verify').send({ phone: phoneNo, code: OtpService.issuedForTests.get(phoneNo) }).expect(200)).body.token);
+    const t = new Date().toISOString(), day = istDay();
+    const brandId = uuidv7(), bought = uuidv7(), comm = uuidv7();
+    const pushed = await http().post('/v1/sync/push').set(auth(shop.accessToken)).send({ items: [
+      { table: 'brands', row: { id: brandId, created_at: t, updated_at: t, name: 'Calcutta', sort_order: 1, shelf_days: 7 } },
+      truck(bought, t, { number: 'P1', supplier: 'Ramu', deal: 'purchase', freight_paise: 50000, advance_paise: 10000, dala_paise: 2000, inaam_paise: 1000,
+        fine_paise: 500, halting_paise: 1500, bada_paid_at: t, bada_paid_by: 'Rajneesh' }),
+      truck(comm, t, { number: 'C1', supplier: 'RAMU.', deal: 'commission', freight_paise: 30000 }),
+      { table: 'truck_grades', row: { id: uuidv7(), created_at: t, truck_id: bought, brand_id: brandId, grade: '1', billed_qty: 100, received_qty: 100, rate_paise: 1000 } },
+      // The app's All paid line: id nameUUIDFromBytes("bada-paid/<truck>"), from the bank.
+      { table: 'daybook_entries', row: { id: badaPayoutId(bought), created_at: t, updated_at: t, direction: 'out', mode: 'bank', category: 'bhada',
+        party_name: 'P1', note: 'Bada · Rajneesh', amount_paise: 37000, business_date: day } },
+      { table: 'daybook_entries', row: { id: uuidv7(), created_at: t, updated_at: t, direction: 'out', mode: 'cash', category: 'supplier',
+        party_name: 'Ramu', note: '', amount_paise: 40000, business_date: day, purchase_bill: bought } },
+      // Not a Supplier Ledger payment (no gaadi): left out.
+      { table: 'daybook_entries', row: { id: uuidv7(), created_at: t, updated_at: t, direction: 'out', mode: 'cash', category: 'supplier',
+        party_name: 'Ramu', note: '', amount_paise: 999, business_date: day } },
+      { table: 'supplier_adjustments', row: { id: uuidv7(), created_at: t, updated_at: t, business_date: day, party_name: 'Ramu', kind: 'kaat', note: 'kharab',
+        truck_id: bought, amount_paise: 5000 } },
+    ] }).expect(200);
+    expect(pushed.body.results.every((r: any) => r.status === 'applied')).toBe(true);
+
+    const bhada = (await http().get(`${base}/nariyal/bhada?from=${day}&to=${day}`).set(w).expect(200)).body;
+    expect(bhada.rows).toHaveLength(2);
+    // 500 - 100 - 20 + 10 - 5 - 15 = 370: halting comes off.
+    expect(bhada.rows.find((r: any) => r.truckId === bought)).toMatchObject({ netPaise: 37000, paid: true, paidBy: 'Rajneesh', paidOn: day,
+      payout: { pot: 'bank', amountPaise: 37000, direction: 'out' }, dana: 100 });
+    expect(bhada.rows.find((r: any) => r.truckId === comm)).toMatchObject({ netPaise: 30000, paid: false, payout: null });
+    expect(bhada.totals).toMatchObject({ gaadis: 2, paidCount: 1, baakiCount: 1, bhadaPaise: 80000, netPaise: 67000, paidPaise: 37000, baakiPaise: 30000 });
+
+    const list = (await http().get(`${base}/nariyal/suppliers`).set(w).expect(200)).body.rows;
+    // Maal 1,000 (no bhada) less 400 paid less 50 kaat; the Commission gaadi has no beejak yet.
+    expect(list).toEqual([expect.objectContaining({ key: 'ramu', gaadis: 2, purchase: 1, commission: 1, duePaise: 55000 })]);
+
+    const led = (await http().get(`${base}/nariyal/suppliers/ramu/ledger?from=${day}&to=${day}`).set(w).expect(200)).body;
+    expect(led).toMatchObject({ name: expect.any(String), openingPaise: 0, closingPaise: 55000, duePaise: 55000,
+      totals: { creditPaise: 100000, debitPaise: 45000, paidPaise: 40000, adjustPaise: 5000, gaadis: 2, dana: 100 } });
+    expect(led.rows.map((r: any) => r.kind).sort()).toEqual(['gaadi', 'gaadi', 'kaat', 'payment']);
+    expect(led.rows.find((r: any) => r.id === bought).gaadi.lots).toEqual([{ maal: 'Calcutta', grade: 'I', qty: 100, ratePaise: 1000, amountPaise: 100000 }]);
+    // The next day: all of it is the opening.
+    const next = new Date(Date.parse(`${day}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+    expect((await http().get(`${base}/nariyal/suppliers/ramu/ledger?from=${next}&to=${next}`).set(w).expect(200)).body)
+      .toMatchObject({ openingPaise: 55000, closingPaise: 55000, rows: [] });
+    await http().get(`${base}/nariyal/suppliers/nobody/ledger?from=${day}&to=${day}`).set(w).expect(404);
   });
 });
 

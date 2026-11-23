@@ -5,6 +5,7 @@ import { BankController } from './admin/bank.controller';
 import { BankService } from './admin/bank.service';
 import { ReportsService } from './admin/reports.service';
 import { EntriesService } from './admin/entries.service';
+import { NariyalHisabService } from './admin/nariyal-hisab.service';
 import { SettingsService } from './admin/settings.service';
 import { InsightsService } from './admin/insights.service';
 import { UdhaarAlertsService } from './alerts/udhaar-alerts.service';
@@ -72,6 +73,6 @@ import { NariyalBeejakService } from './nariyal/nariyal-beejak.service';
 @Module({
   controllers: [AdminAuthController, AdminController, HealthController, AuthController, ShopsController, SyncController, RequestsController, PrintController, PhotosController, ReleasesController, PublicReleasesController, ReleasePublishController, KycController, DigilockerReturnController, VoiceController, SlipSendsController, BeejaksController, CheekuAppController, CheekuAdminController, CheekuBillLinkController, NariyalAppController, BankController],
   providers: [Db, ReleasesStore, AdminService, ReportsService, EntriesService, SettingsService, InsightsService, AdminGuard, OtpService, TokensService, AccountsService, AuthGuard, SyncService, SyncHub, RequestsService, PrintService, UdhaarAlertsService, RemindersService, PickupNoticesService, CreditorsService, MachinesService, ConsoleService, DepositsService, MastersService, CratesService, ColdStoreService, BooksService, VouchersService, InvoicesService, SlipSendsService, KycService, UlipClient, DigilockerKycService, SurepassClient, SandboxDigilockerClient, GeminiClient, VoiceService, PortalVoiceService, SheetService,
-    CheekuEntriesService, CheekuDeskService, CheekuCreditorsService, CheekuPickupNoticesService, CheekuSlipSendsService, CheekuSettingsService, CheekuCommissionsService, CheekuForwardService, CheekuForwardSendsService, NariyalBeejakService, BankService],
+    CheekuEntriesService, CheekuDeskService, CheekuCreditorsService, CheekuPickupNoticesService, CheekuSlipSendsService, CheekuSettingsService, CheekuCommissionsService, CheekuForwardService, CheekuForwardSendsService, NariyalBeejakService, BankService, NariyalHisabService],
 })
 export class AppModule {}
