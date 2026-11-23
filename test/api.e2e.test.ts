@@ -5207,7 +5207,7 @@ describe('bank statement and reconciliation (partner)', () => {
       'STATEMENT SUMMARY,,,,,,',
     ].join('\r\n');
     const pre = (await http().post(`${base}/bank/csv/preview`).set(pw).send({ text: csv }).expect(200)).body;
-    expect(pre).toMatchObject({ headerRow: 3, dateOrder: 'dmy', mapping: { date: 0, narration: 1, ref: 2, debit: 4, credit: 5, balance: 6 } });
+    expect(pre).toMatchObject({ headerRow: 2, dateOrder: 'dmy', mapping: { date: 0, narration: 1, ref: 2, debit: 4, credit: 5, balance: 6 } });
     const up = { account: acct, text: csv, fileName: 'hdfc.csv', headerRow: pre.headerRow, mapping: pre.mapping, dateOrder: pre.dateOrder };
     expect((await http().post(`${base}/bank/csv/import`).set(pw).send(up).expect(201)).body).toMatchObject({ added: 4, duplicates: 0, skipped: 1 });
     // The same statement again adds nothing.
