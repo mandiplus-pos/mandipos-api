@@ -1190,6 +1190,31 @@ export class AdminController {
     return this.entries.pickup(v.phone, mine(v, id), parse(z.object({ billId: z.uuid(), qty: z.number().int().min(1).max(100000) }), body));
   }
 
+  /** Nariyal Dispatch: the days' parchis, scanned back (Maal diya) or still missing, as the app's Hisab > Dispatch. */
+  @Get('shops/:id/nariyal/dispatch')
+  nariyalDispatch(@See() v: Viewer, @Param('id') id: string, @Query('from') from?: string, @Query('to') to?: string) {
+    const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+    return this.entries.nariyalDispatch(mine(v, id), parse(day, from), parse(day, to ?? from));
+  }
+
+  /** A nariyal parchi by its QR, barcode or number, for the website's scanner. */
+  @Get('shops/:id/nariyal/slip')
+  nariyalSlip(@See() v: Viewer, @Param('id') id: string, @Query('code') code?: string) {
+    return this.entries.nariyalSlip(mine(v, id), parse(z.string().trim().min(1).max(40), code ?? ''));
+  }
+
+  /** Maal diya: the parchi is back, its maal has gone. Once per parchi. */
+  @Post('shops/:id/nariyal/returns')
+  nariyalReturn(@See() v: Viewer, @Param('id') id: string, @Body() body: unknown) {
+    return this.entries.nariyalReturn(v.phone, mine(v, id), parse(z.object({ billId: z.uuid() }), body).billId);
+  }
+
+  /** "Scan galat tha": a Maal diya made by mistake, taken back. */
+  @Post('shops/:id/nariyal/returns/undo')
+  nariyalUnscan(@See() v: Viewer, @Param('id') id: string, @Body() body: unknown) {
+    return this.entries.nariyalUnscan(v.phone, mine(v, id), parse(z.object({ billId: z.uuid() }), body).billId);
+  }
+
   /** A gaadi changed: number, supplier, place, bhada, and (grapes, cheeku) each quality's boxes. Nariyal and amrud: the number only. */
   @Post('shops/:id/gaadi/:truckId')
   editGaadi(@See() v: Viewer, @Param('id') id: string, @Param('truckId') truckId: string, @Body() body: unknown) {

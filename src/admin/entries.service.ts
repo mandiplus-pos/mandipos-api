@@ -1126,6 +1126,137 @@ export class EntriesService {
     return { ...slip, picked: slip.picked + input.qty, left: slip.left - input.qty };
   }
 
+  // ---------------------------------------------------------------- nariyal dispatch (parchi wapas)
+
+  /**
+   * Nariyal Dispatch, as the app's Hisab > Dispatch draws it: each live parchi of the days with
+   * its dana and gaadi(s), and whether it is scanned back (Maal diya) yet. A scan counts while it
+   * is not taken back (nariyal_return_voids); a parchi corrected after its scan (same number,
+   * 'edited' void) still counts as scanned, exactly as Store.nariyalScanned on the terminal.
+   */
+  async nariyalDispatch(shopId: string, from: string, to: string) {
+    return this.db.withShop(shopId, async (tx) => {
+      const rows = (await tx.query<{ id: string; slip_no: number | null; buyer_name: string; day: string; created_at: Date; qty: string;
+        scanned_at: Date | null; scanned_by: string | null }>(
+        `WITH live_ret AS (
+           SELECT r.id, r.bill_id, r.created_at, r.device_id FROM nariyal_returns r
+           WHERE NOT EXISTS (SELECT 1 FROM nariyal_return_voids rv WHERE rv.return_id = r.id)),
+         lb AS (
+           SELECT b.* FROM bills b WHERE b.business_date BETWEEN $1::date AND $2::date
+             AND NOT EXISTS (SELECT 1 FROM bill_voids v WHERE v.bill_id = b.id))
+         SELECT lb.id, lb.slip_no, lb.buyer_name, lb.business_date::text AS day, lb.created_at,
+                (SELECT COALESCE(SUM(l.qty), 0) FROM bill_lines l WHERE l.bill_id = lb.id) AS qty,
+                s.created_at AS scanned_at, s.by AS scanned_by
+         FROM lb
+         LEFT JOIN LATERAL (
+           SELECT r.created_at, CONCAT_WS(' · ', d.code, NULLIF(d.label, '')) AS by FROM live_ret r
+           LEFT JOIN devices d ON d.id = r.device_id
+           WHERE r.bill_id = lb.id OR (lb.slip_no IS NOT NULL AND r.bill_id IN
+             (SELECT v.bill_id FROM bill_voids v WHERE v.slip_no = lb.slip_no AND v.reason = 'edited'))
+           ORDER BY r.created_at DESC LIMIT 1) s ON true
+         ORDER BY lb.business_date, COALESCE(lb.slip_no, 0), lb.created_at`, [from, to])).rows;
+      const ids = rows.map((r) => r.id);
+      const gaadis = ids.length ? (await tx.query<{ bill_id: string; truck_id: string; number: string | null; supplier: string | null }>(
+        `SELECT l.bill_id, t.id AS truck_id, t.number, t.supplier FROM bill_lines l JOIN trucks t ON t.id = l.truck_id
+         WHERE l.bill_id = ANY($1::uuid[]) GROUP BY l.bill_id, t.id, t.number, t.supplier ORDER BY MIN(l.created_at)`, [ids])).rows : [];
+      const byBill = new Map<string, { truckId: string; name: string }[]>();
+      for (const g of gaadis) {
+        const name = g.number && g.number.trim() && g.number !== '-' ? g.number : (g.supplier ?? '');
+        byBill.set(g.bill_id, [...(byBill.get(g.bill_id) ?? []), { truckId: g.truck_id, name }]);
+      }
+      const slips = rows.map((r) => ({
+        billId: r.id, slipNo: r.slip_no, buyer: r.buyer_name, date: r.day, at: r.created_at.toISOString(), qty: Number(r.qty),
+        gaadis: byBill.get(r.id) ?? [], scanned: r.scanned_at != null, scannedAt: r.scanned_at?.toISOString() ?? null, scannedBy: r.scanned_by ?? '',
+      }));
+      const done = slips.filter((s) => s.scanned);
+      const dana = slips.reduce((a, s) => a + s.qty, 0), danaScanned = done.reduce((a, s) => a + s.qty, 0);
+      return { from, to, slips, totals: { slips: slips.length, scanned: done.length, missing: slips.length - done.length, dana, danaScanned, danaMissing: dana - danaScanned } };
+    });
+  }
+
+  /**
+   * A nariyal parchi from what the scanner (or the counter) gives: its QR (the bill id), the
+   * barcode printed on it (20 digits: the id's last 16 hex digits as a number), or its number.
+   * A parchi corrected since is followed to the one now standing under its number.
+   */
+  async nariyalSlip(shopId: string, code: string) {
+    return this.db.withShop(shopId, async (tx) => {
+      const c = code.trim();
+      let id: string | null = /^[0-9a-f-]{36}$/i.test(c) ? c.toLowerCase() : null;
+      if (!id && /^\d{20}$/.test(c)) {
+        const hex = BigInt(c).toString(16);
+        if (hex.length <= 16) {
+          const h = hex.padStart(16, '0');
+          const tail = `%-${h.slice(0, 4)}-${h.slice(4)}`;
+          id = (await tx.query<{ id: string }>(`SELECT id FROM bills WHERE id::text LIKE $1 LIMIT 1`, [tail])).rows[0]?.id ?? null;
+        }
+        if (!id) throw new NotFoundException('Yeh parchi nahi mili');
+      }
+      const slipNo = id ? (await tx.query<{ slip_no: number | null }>(`SELECT slip_no FROM bills WHERE id = $1`, [id])).rows[0]?.slip_no ?? null
+        : /^\d{1,7}$/.test(c) ? Number(c) : null;
+      if (id == null && slipNo == null) throw new NotFoundException('Yeh parchi nahi mili');
+      const live = (await tx.query<{ id: string }>(
+        `SELECT b.id FROM bills b WHERE NOT EXISTS (SELECT 1 FROM bill_voids v WHERE v.bill_id = b.id)
+           AND (b.id::text = $1 OR (b.slip_no IS NOT NULL AND b.slip_no = $2))
+         ORDER BY (b.id::text = $1) DESC, b.created_at DESC LIMIT 1`, [id ?? '', slipNo])).rows[0];
+      if (!live) {
+        const cancelled = id ? (await tx.query(`SELECT 1 FROM bill_voids WHERE bill_id = $1 AND reason <> 'edited'`, [id])).rowCount : 0;
+        throw new NotFoundException(cancelled ? 'Yeh parchi cancel hai' : 'Yeh parchi nahi mili');
+      }
+      const b = (await tx.query<{ id: string; slip_no: number | null; buyer_name: string; day: string; created_at: Date }>(
+        `SELECT id, slip_no, buyer_name, business_date::text AS day, created_at FROM bills WHERE id = $1`, [live.id])).rows[0];
+      const lines = (await tx.query<{ brand: string | null; grade: string | null; leak: boolean | null; number: string | null; supplier: string | null; qty: string }>(
+        `SELECT br.name AS brand, l.grade, l.leak, t.number, t.supplier, SUM(l.qty) AS qty FROM bill_lines l
+         LEFT JOIN brands br ON br.id = l.brand_id LEFT JOIN trucks t ON t.id = l.truck_id
+         WHERE l.bill_id = $1 GROUP BY br.name, l.grade, l.leak, t.number, t.supplier ORDER BY t.number, br.name`, [b.id])).rows;
+      const scan = await this.liveScans(tx, b.id, b.slip_no);
+      const gaadi = [...new Set(lines.map((l) => [l.number && l.number !== '-' ? l.number : '', l.supplier ?? ''].filter(Boolean).join(' · ')).filter(Boolean))].join(', ');
+      return {
+        billId: b.id, slipNo: b.slip_no, buyer: b.buyer_name, date: b.day, at: b.created_at.toISOString(), gaadi,
+        qty: lines.reduce((a, l) => a + Number(l.qty), 0),
+        lines: lines.map((l) => ({ maal: [l.brand ?? '', l.leak ? 'Leak' : gradeLabel(l.grade)].filter(Boolean).join(' · '), qty: Number(l.qty) })),
+        scanned: scan.length > 0, scannedAt: scan[0]?.at ?? null,
+      };
+    });
+  }
+
+  /** The live (not taken back) scans that make a parchi count: its own, or the parchi it was corrected from. */
+  private async liveScans(tx: Tx, billId: string, slipNo: number | null) {
+    return (await tx.query<{ id: string; bill_id: string; created_at: Date }>(
+      `SELECT r.id, r.bill_id, r.created_at FROM nariyal_returns r
+       WHERE NOT EXISTS (SELECT 1 FROM nariyal_return_voids rv WHERE rv.return_id = r.id)
+         AND (r.bill_id = $1 OR ($2::int IS NOT NULL AND r.bill_id IN
+           (SELECT v.bill_id FROM bill_voids v WHERE v.slip_no = $2::int AND v.reason = 'edited')))
+       ORDER BY r.created_at DESC`, [billId, slipNo])).rows.map((r) => ({ id: r.id, billId: r.bill_id, at: r.created_at.toISOString() }));
+  }
+
+  /** Maal diya from the website: one nariyal_returns row, as the app's scanner writes it. A parchi scanned before saves nothing. */
+  async nariyalReturn(phone: string, shopId: string, billId: string) {
+    const slip = await this.nariyalSlip(shopId, billId);
+    if (slip.billId !== billId) throw new BadRequestException('Parchi badal gayi hai, dobara scan karein');
+    if (slip.scanned) return { ...slip, already: true };
+    const p = await this.device(phone, shopId);
+    const at = new Date().toISOString();
+    await this.push(p, shopId, [{ table: 'nariyal_returns', txn: uuidv7(), row: { id: uuidv7(), created_at: at, bill_id: billId } }]);
+    return { ...slip, scanned: true, scannedAt: at, already: false };
+  }
+
+  /** "Scan galat tha": each live scan behind the parchi gets a void, as Store.unscanNariyal on the terminal. */
+  async nariyalUnscan(phone: string, shopId: string, billId: string) {
+    const scans = await this.db.withShop(shopId, async (tx) => {
+      const b = (await tx.query<{ slip_no: number | null }>(`SELECT slip_no FROM bills WHERE id = $1`, [billId])).rows[0];
+      if (!b) throw new NotFoundException('Yeh parchi nahi mili');
+      return this.liveScans(tx, billId, b.slip_no);
+    });
+    if (!scans.length) throw new BadRequestException('Yeh parchi scan hi nahi hui');
+    const p = await this.device(phone, shopId);
+    const name = (await this.db.query<{ name: string | null }>(`SELECT name FROM users WHERE phone = $1`, [phone]))[0]?.name?.trim() || phone;
+    const at = new Date().toISOString(), txn = uuidv7();
+    await this.push(p, shopId, scans.map((s) => ({ table: 'nariyal_return_voids', txn,
+      row: { id: uuidv7(), created_at: at, return_id: s.id, bill_id: s.billId, staff_name: name.slice(0, 80) } })));
+    return { ok: true };
+  }
+
   /** Broken boxes on a slip already handed over, for the accountant to write at a new bhav — as the app's scanner raises it. */
   async reportBreakage(phone: string, shopId: string, input: { billId: string; brandId: string | null; truckId: string | null; qty: number; note?: string }) {
     const slip = await this.pickupSlip(shopId, input.billId);
@@ -1297,4 +1428,9 @@ function laddanCols(b: LaddanFields) {
     email: b.email === undefined ? undefined : b.email.trim().toLowerCase(), area: up(b.area), bank_details: b.bankDetails === undefined ? undefined : b.bankDetails.trim(),
   };
   return Object.fromEntries(Object.entries(cols).filter(([, v]) => v !== undefined));
+}
+
+/** Grade as the nariyal slip writes it. */
+function gradeLabel(g: string | null): string {
+  switch ((g ?? '').toUpperCase()) { case '1': return 'I'; case '2': return 'II'; case '3': return 'III'; case 'MIX': return 'Mix'; default: return g ?? '' }
 }

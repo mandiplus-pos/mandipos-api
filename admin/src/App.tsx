@@ -49,6 +49,7 @@ import { exportBuilder, openExport, useCanExport } from './export/doc'
 import { CheekuTools } from './CheekuTools'
 import { t } from './i18n'
 import { isCheeku } from './commodity'
+import { NariyalDispatch } from './pages/NariyalDispatch'
 // Cheeku Fruits: its own copies of the grapes pages, scanner, labour page and Bikri Entry.
 import { CheekuApmc, CheekuBeejaks, CheekuCommission, CheekuDispatch, CheekuGaadiPata, CheekuMazdoori } from './pages/Cheeku'
 import { CheekuCreditors, CheekuLaddan } from './pages/CheekuCreditors'
@@ -146,7 +147,16 @@ export const CHEEKU_REPORTS: (typeof REPORTS)[number] = { group: t('Cheeku'), it
 ] }
 /** The sidebar's groups for a shop: the grapes desk only where the shop sells grapes; cheeku's own desk for cheeku. */
 export const reportGroups = (commodity?: string) => (commodity === 'angoor' ? [REPORTS[0], ANGOOR_REPORTS, ...REPORTS.slice(1)]
-  : isCheeku(commodity) ? [REPORTS[0], CHEEKU_REPORTS, ...REPORTS.slice(1)] : REPORTS)
+  : isCheeku(commodity) ? [REPORTS[0], CHEEKU_REPORTS, ...REPORTS.slice(1)] : commodity === 'nariyal' ? withNariyalDispatch(REPORTS) : REPORTS)
+
+/** Nariyal: Dispatch (parchi wapas, as the app's Hisab > Dispatch) right below Munafa. */
+const withNariyalDispatch = (groups: typeof REPORTS): typeof REPORTS => groups.map((g) => {
+  const at = g.items.findIndex((it) => it.report === 'munafa')
+  if (at < 0) return g
+  const items = [...g.items]
+  items.splice(at + 1, 0, { report: 'nariyal-dispatch', label: t('Dispatch'), key: '', icon: I.IScan })
+  return { ...g, items }
+})
 
 const LAST_SHOP = 'mandipos-shop'
 
@@ -496,6 +506,7 @@ function ReportPage({ shopId, report }: { shopId: string; report: Report }) {
     case 'settings': return <Settings key={shopId} shopId={shopId} />
     case 'register': return <SalesRegister key={shopId} shopId={shopId} />
     case 'munafa': return <Munafa key={shopId} shopId={shopId} />
+    case 'nariyal-dispatch': return <NariyalDispatch key={shopId} shopId={shopId} />
     case 'vasooli': return <Vasooli key={shopId} shopId={shopId} />
     case 'gaadis': return <GaadiHisab key={shopId} shopId={shopId} />
     case 'bhav': return <Bhav key={shopId} shopId={shopId} />
@@ -546,7 +557,7 @@ function ReportPage({ shopId, report }: { shopId: string; report: Report }) {
 
 function titleOf(r: Route): string {
   switch (r.page) {
-    case 'report': return r.report === 'settings' ? t('Settings') : [...REPORTS, ANGOOR_REPORTS, CHEEKU_REPORTS].flatMap((g) => g.items).find((i) => i.report === r.report)?.label ?? t('Dashboard')
+    case 'report': return r.report === 'settings' ? t('Settings') : r.report === 'nariyal-dispatch' ? t('Dispatch') : [...REPORTS, ANGOOR_REPORTS, CHEEKU_REPORTS].flatMap((g) => g.items).find((i) => i.report === r.report)?.label ?? t('Dashboard')
     case 'grahak': return t('Grahak Khata')
     case 'supplier': return t('Supplier Khata')
     case 'shops': return t('Sab Dukaan')
