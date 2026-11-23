@@ -5083,6 +5083,8 @@ describe('nariyal gaadi deal', () => {
     // An app from before sends it as a rate a dana with no amount: worked out as rate x dana, never 0.
     const s5 = (await http().post(`/v1/nariyal/beejaks/${comm}`).set(auth(shop)).send({ ...body, heads: [{ key: 'mazdoori', rate: 30 }] }).expect(201)).body;
     expect(s5.expenses).toContainEqual({ key: 'mazdoori', kind: 'dana', rate: 30, amountPaise: 3900 });
+    // Back to the package-cost beejak (net ₹2,850), which the opening balance below reads.
+    await http().post(`/v1/nariyal/beejaks/${comm}`).set(auth(shop)).send({ ...body, heads: [{ key: 'package', amountPaise: 5000 }] }).expect(201);
 
     // Opening balance: his earlier Commission gaadi's net (₹2,850) less ₹1,000 paid for it; another
     // supplier's gaadi, a later one and a payment for a gaadi not his earlier ones don't count.
