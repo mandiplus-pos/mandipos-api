@@ -151,7 +151,7 @@ export const CHEEKU_REPORTS: (typeof REPORTS)[number] = { group: t('Cheeku'), it
  * khata & milan. Their code, routes and server endpoints stay; only the navigation (sidebar and
  * Go To) leaves them out, and a partner lands on the Dashboard. Set to false to bring them back.
  */
-const PAGES_ON_HOLD = true
+const PAGES_ON_HOLD = false
 const ON_HOLD = new Set<Report>(PAGES_ON_HOLD ? ['balancesheet', 'pnl', 'bank'] : [])
 const withoutOnHold = (groups: typeof REPORTS): typeof REPORTS =>
   groups.map((g) => ({ ...g, items: g.items.filter((it) => !ON_HOLD.has(it.report)) })).filter((g) => g.items.length > 0)
