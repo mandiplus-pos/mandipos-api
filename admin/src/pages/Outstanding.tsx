@@ -1,11 +1,51 @@
 import { useState } from 'react'
-import { api, type Outstanding as Out } from '../api'
+import { api, type OpenSlip, type Outstanding as Out } from '../api'
 import { count, phone, rupees, shortDate } from '../format'
 import { hashQuery, href, setHashQuery } from '../routes'
 import { useLoad } from '../useLoad'
 import { Skeleton } from '../ui'
 import { t } from '../i18n'
 import { dmy, fileName, rs, useExport } from '../export/doc'
+import { openVoucher } from '../keys'
+
+/**
+ * "Parchi 30,000 · mila 15,000 · baaki 15,000" (CollectionsScreen.splitLine). Mila is what came in
+ * at the counter and since; the counter part is already the day's cash / UPI sale, so it is only shown here.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export const splitLine = (totalPaise: number, receivedPaise: number, openPaise: number) =>
+  t('Parchi {total} · mila {got} · baaki {left}', { total: rupees(totalPaise), got: rupees(receivedPaise), left: rupees(openPaise) })
+
+/** A grahak's row: the split line when something already came in, and the "n parchi" toggle. */
+export function DueDetail({ r, open, onToggle }: { r: Out['rows'][number]; open: boolean; onToggle: () => void }) {
+  return (
+    <>
+      {r.receivedPaise > 0 && <small className="split">{splitLine(r.billedPaise, r.receivedPaise, r.billedPaise - r.receivedPaise)}</small>}
+      {r.slips.length > 0 && (
+        <small><button type="button" className="link" aria-expanded={open} onClick={(e) => { e.stopPropagation(); onToggle() }}>
+          {t('{n} khuli parchi', { n: r.slips.length })} {open ? '▴' : '▾'}
+        </button></small>
+      )}
+    </>
+  )
+}
+
+/** The grahak's open slips under the row, each with what it was, what came in and what is left; a tap opens the parchi. */
+export function OpenSlipRows({ shopId, slips, cols }: { shopId: string; slips: OpenSlip[]; cols: number }) {
+  return (
+    <tr className="open-lines">
+      <td colSpan={cols}>
+        {slips.map((s) => (
+          <div key={s.billId}>
+            <button type="button" className="link" onClick={() => openVoucher(shopId, s.billId)}>#{s.slipNo ?? '—'}</button>
+            <span className="muted"> · {shortDate(s.date)} · </span>
+            {s.receivedPaise > 0 ? splitLine(s.totalPaise, s.receivedPaise, s.openPaise) : <>{t('Baaki')} <b className="money due">{rupees(s.openPaise)}</b></>}
+          </div>
+        ))}
+      </td>
+    </tr>
+  )
+}
 
 const VIEWS = [{ key: 'sab', label: t('Sab') }, { key: '30', label: t('30+ din') }, { key: '8', label: t('8+ din') }] as const
 type View = (typeof VIEWS)[number]['key']
@@ -14,6 +54,7 @@ type View = (typeof VIEWS)[number]['key']
 export function Outstanding({ shopId }: { shopId: string }) {
   const [view, setView] = useState<View>(() => VIEWS.find((v) => v.key === hashQuery().get('v'))?.key ?? 'sab')
   const [q, setQ] = useState('')
+  const [opened, setOpened] = useState<string | null>(null)
   const { data, error } = useLoad(() => api<Out>(`/v1/admin/shops/${shopId}/outstanding`), [shopId])
   const pick = (v: View) => { setView(v); setHashQuery({ ...Object.fromEntries(hashQuery()), v }) }
   const query = q.trim().toLowerCase()
@@ -49,7 +90,7 @@ export function Outstanding({ shopId }: { shopId: string }) {
             <table className="tbl fold">
               <thead><tr><th>{t('Code')}</th><th>{t('Grahak')}</th><th className="num">{t('0–7 din')}</th><th className="num">{t('8–30 din')}</th><th className="num">{t('30+ din')}</th><th className="num">{t('Kul baaki')}</th><th>{t('Aakhri parchi')}</th></tr></thead>
               <tbody>
-                {rows.map((r) => (
+                {rows.map((r) => [
                   <tr key={r.buyerId} data-row tabIndex={0} onClick={() => { location.hash = href({ page: 'grahak', shopId, buyerId: r.buyerId }) }}
                     onKeyDown={(e) => { if (e.key === 'Enter') location.hash = href({ page: 'grahak', shopId, buyerId: r.buyerId }) }}>
                     <td className="code-col">{r.code ? <span className="code">{r.code}</span> : null}</td>
@@ -57,14 +98,16 @@ export function Outstanding({ shopId }: { shopId: string }) {
                       <b>{r.name}</b>
                       <small>{r.phone ? phone(r.phone) : ''}
                         {r.d31 > 0 && <span className="show-sm due"> · {t('30+ din')} {rupees(r.d31)}</span>}</small>
+                      <DueDetail r={r} open={opened === r.buyerId} onToggle={() => setOpened(opened === r.buyerId ? null : r.buyerId)} />
                     </td>
                     <td className="num opt-col money">{r.d0_7 ? rupees(r.d0_7) : ''}</td>
                     <td className="num opt-col money">{r.d8_30 ? rupees(r.d8_30) : ''}</td>
                     <td className={`num opt-col money${r.d31 ? ' due b' : ''}`}>{r.d31 ? rupees(r.d31) : ''}</td>
                     <td className="num amt-col money b due">{rupees(r.duePaise)}</td>
                     <td className="opt-col muted">{r.lastSlipOn ? shortDate(r.lastSlipOn) : '—'}{r.oldestDays !== null && r.oldestDays > 7 ? <small>{t('{n} din purana', { n: r.oldestDays })}</small> : null}</td>
-                  </tr>
-                ))}
+                  </tr>,
+                  opened === r.buyerId && <OpenSlipRows key={`${r.buyerId}-slips`} shopId={shopId} slips={r.slips} cols={7} />,
+                ])}
               </tbody>
             </table>
             {rows.length === 0 && <p className="empty">{data.rows.length ? t('Is filter mein koi nahi') : t('Kisi par udhaar nahi')}</p>}
