@@ -5076,6 +5076,13 @@ describe('nariyal gaadi deal', () => {
     const s3 = (await http().post(`/v1/nariyal/beejaks/${comm}`).set(auth(shop)).send({ ...body, heads: [{ key: 'package', amountPaise: 5000 }] }).expect(201)).body;
     expect(s3).toMatchObject({ no: 1, expensesPaise: 5000, netPaise: 285000 });
     expect(s3.expenses).toContainEqual({ key: 'package', kind: 'flat', rate: null, amountPaise: 5000 });
+    // Mazdoori is a flat ₹ typed by the shop: ₹2,500 comes off as exactly ₹2,500, whatever the dana.
+    const s4 = (await http().post(`/v1/nariyal/beejaks/${comm}`).set(auth(shop)).send({ ...body, heads: [{ key: 'mazdoori', amountPaise: 250000 }] }).expect(201)).body;
+    expect(s4).toMatchObject({ no: 1, expensesPaise: 250000, netPaise: 290000 - 250000 });
+    expect(s4.expenses).toContainEqual({ key: 'mazdoori', kind: 'flat', rate: null, amountPaise: 250000 });
+    // An app from before sends it as a rate a dana with no amount: worked out as rate x dana, never 0.
+    const s5 = (await http().post(`/v1/nariyal/beejaks/${comm}`).set(auth(shop)).send({ ...body, heads: [{ key: 'mazdoori', rate: 30 }] }).expect(201)).body;
+    expect(s5.expenses).toContainEqual({ key: 'mazdoori', kind: 'dana', rate: 30, amountPaise: 3900 });
 
     // Opening balance: his earlier Commission gaadi's net (₹2,850) less ₹1,000 paid for it; another
     // supplier's gaadi, a later one and a payment for a gaadi not his earlier ones don't count.
