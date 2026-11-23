@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Db, Tx } from '../db/db.service';
+import { jamaBeforeSlip } from './reports.service';
 
 /**
  * What the MandiPlus admin portal reads. Every figure follows the app's own sums (Store.kt), so
@@ -542,6 +543,8 @@ export class AdminService {
         `SELECT id, created_at AS at, business_date::text AS day, direction, mode, category, party_name AS party, note, amount_paise AS amount
          FROM daybook_entries WHERE hidden = false AND category <> 'opening' AND business_date BETWEEN $1 AND $2
          ORDER BY created_at DESC LIMIT 1000`, [from, to])).rows;
+      // "Jama se kata": the part of an udhaar slip the grahak's earlier money already paid off.
+      const fromJama = slips.some((b) => b.buyer_id && n(b.total) > n(b.paid)) ? await jamaBeforeSlip(tx) : new Map<string, number>();
 
       const entries = [
         ...slips.map((b) => ({
@@ -550,6 +553,7 @@ export class AdminService {
           // Refunded after its day: still the day's sale (the money left on the refund's day), owing nothing.
           amountPaise: n(b.total), cashPaise: n(b.cash), upiPaise: n(b.upi), udhaarPaise: b.late ? 0 : Math.max(0, n(b.total) - n(b.paid)),
           payMode: b.pay_mode, staff: b.staff, voided: b.late ? null : b.void_reason, lateRefund: b.late,
+          jamaPaise: fromJama.get(b.id) ?? 0,
         })),
         ...pays.map((c) => ({
           kind: 'payment' as const, id: c.id, at: c.at.toISOString(), date: c.day,

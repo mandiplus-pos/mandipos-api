@@ -5489,5 +5489,15 @@ describe('grahak jama', () => {
     for (const b of list) expect((await http().get(`${base}/buyers/${b.id}`).set(web).expect(200)).body.totals.balancePaise).toBe(b.balancePaise);
     // The full list still has everyone.
     expect(((await http().get(`${base}/buyers?all=1`).set(web).expect(200)).body.buyers as any[]).length).toBe(3);
+
+    // Day Book: Asha's 909 udhaar came off the 3,000 she gave before it ("Jama se kata").
+    // A 2,500 slip next takes only the 2,091 left; the 409 she pays after it doesn't count.
+    const big = (await http().post(`${base}/entries/parchi`).set(web).send({ buyerId: asha, truckId, lines: [{ grade: '1', qty: 1, ratePaise: 250000 }], pay: 'credit', packing: 'loose', labour: false }).expect(201)).body;
+    await http().post(`${base}/entries/vasooli`).set(web).send({ buyerId: asha, cashPaise: 40900, upiPaise: 0 }).expect(201);
+    const d = istDay();
+    const day = (await http().get(`${base}/daybook?from=${d}&to=${d}`).set(web).expect(200)).body.entries as any[];
+    const slips = day.filter((e) => e.kind === 'slip').map((e) => [e.party, e.udhaarPaise, e.jamaPaise]).reverse();
+    expect(slips).toEqual([['Asha', 90900, 90900], ['Chotu', 100000, 0], ['Asha', 250000, 209100]]);
+    expect(day.find((e) => e.id === big.billId).jamaPaise).toBe(209100);
   });
 });

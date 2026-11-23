@@ -68,28 +68,10 @@ export type OpenDue = {
  * vasooli as vasooli, never this.
  */
 export async function openDues(tx: Tx): Promise<Map<string, OpenDue[]>> {
-  const slips = (await tx.query<{ id: string; buyer_id: string; slip_no: number | null; day: string; at: Date; total: string; paid: string; collected: string }>(
-    `SELECT lb.id, lb.buyer_id, lb.slip_no, lb.business_date::text AS day, lb.created_at AS at, lb.total_paise AS total, lb.paid_paise AS paid,
-            COALESCE((SELECT SUM(lc.amount_paise) FROM ${LIVE_COLS} lc WHERE lc.bill_id = lb.id), 0) AS collected
-     FROM ${LIVE_BILLS} lb WHERE lb.buyer_id IS NOT NULL AND lb.total_paise > lb.paid_paise`)).rows;
-  const entries = (await tx.query<{ buyer_id: string; at: Date; amt: string }>(
-    `SELECT buyer_id, created_at AS at, amount_paise AS amt FROM udhaar_entries WHERE amount_paise <> 0`)).rows;
-  const loose = new Map<string, number>();
-  const addLoose = (buyer: string, paise: number) => loose.set(buyer, (loose.get(buyer) ?? 0) + paise);
-  // A negative entry is jama: the shop holds the grahak's money, which pays off their dues.
-  for (const e of entries) if (n(e.amt) < 0) addLoose(e.buyer_id, -n(e.amt));
-  for (const r of (await tx.query<{ buyer_id: string; amt: string }>(
-    `SELECT lc.buyer_id, SUM(lc.amount_paise) AS amt FROM ${LIVE_COLS} lc
-     WHERE lc.bill_id IS NULL OR NOT EXISTS (SELECT 1 FROM ${LIVE_BILLS} lb WHERE lb.id = lc.bill_id) GROUP BY lc.buyer_id`)).rows) addLoose(r.buyer_id, n(r.amt));
-  const by = new Map<string, OpenDue[]>();
-  const add = (buyer: string, d: OpenDue) => { const l = by.get(buyer) ?? []; l.push(d); by.set(buyer, l); };
-  for (const e of entries) if (n(e.amt) > 0) add(e.buyer_id, { billId: null, slipNo: null, date: istDay(e.at), at: e.at, totalPaise: n(e.amt),
-    paidAtCounterPaise: 0, collectedOnSlipPaise: 0, receivedPaise: 0, openPaise: n(e.amt) });
-  for (const b of slips) add(b.buyer_id, { billId: b.id, slipNo: b.slip_no, date: b.day, at: b.at, totalPaise: n(b.total),
-    paidAtCounterPaise: n(b.paid), collectedOnSlipPaise: n(b.collected), receivedPaise: 0, openPaise: n(b.total) - n(b.paid) - n(b.collected) });
+  const { by, loose } = await duesAndLoose(tx);
   for (const [buyer, dues] of by) {
-    let pool = loose.get(buyer) ?? 0;
-    const settled = dues.sort((x, y) => Number(!!x.billId) - Number(!!y.billId) || x.at.getTime() - y.at.getTime()).map((d) => {
+    let pool = (loose.get(buyer) ?? []).reduce((s, m) => s + m.paise, 0);
+    const settled = dues.map((d) => {
       const off = Math.min(pool, Math.max(0, d.openPaise));
       pool -= off;
       const openPaise = d.openPaise - off;
@@ -98,6 +80,60 @@ export async function openDues(tx: Tx): Promise<Map<string, OpenDue[]>> {
     by.set(buyer, settled);
   }
   return by;
+}
+
+/**
+ * How much of each udhaar slip was paid off by money the grahak had already given before the
+ * slip was made (an advance, an on-account vasooli, a jama entry): "Jama se kata" on the Day
+ * Book. The same allocation as openDues (purana udhaar first, then the oldest slips), with the
+ * loose money spent oldest first, so a slip's share counts only what came in before its time.
+ * Display only, like openDues. billId -> paise; slips with none are left out.
+ */
+export async function jamaBeforeSlip(tx: Tx): Promise<Map<string, number>> {
+  const { by, loose } = await duesAndLoose(tx);
+  const out = new Map<string, number>();
+  for (const [buyer, dues] of by) {
+    const money = loose.get(buyer) ?? [];
+    if (!money.length) continue;
+    const total = money.reduce((s, m) => s + m.paise, 0);
+    let spent = 0;
+    for (const d of dues) {
+      const off = Math.min(total - spent, Math.max(0, d.openPaise));
+      if (d.billId && off > 0) {
+        const before = money.filter((m) => m.at.getTime() < d.at.getTime()).reduce((s, m) => s + m.paise, 0);
+        const covered = Math.min(off, Math.max(0, before - spent));
+        if (covered > 0) out.set(d.billId, covered);
+      }
+      spent += off;
+    }
+  }
+  return out;
+}
+
+/** openDues' inputs: each grahak's dues before any loose money (in settling order), and the loose money with its time. */
+async function duesAndLoose(tx: Tx) {
+  const slips = (await tx.query<{ id: string; buyer_id: string; slip_no: number | null; day: string; at: Date; total: string; paid: string; collected: string }>(
+    `SELECT lb.id, lb.buyer_id, lb.slip_no, lb.business_date::text AS day, lb.created_at AS at, lb.total_paise AS total, lb.paid_paise AS paid,
+            COALESCE((SELECT SUM(lc.amount_paise) FROM ${LIVE_COLS} lc WHERE lc.bill_id = lb.id), 0) AS collected
+     FROM ${LIVE_BILLS} lb WHERE lb.buyer_id IS NOT NULL AND lb.total_paise > lb.paid_paise`)).rows;
+  const entries = (await tx.query<{ buyer_id: string; at: Date; amt: string }>(
+    `SELECT buyer_id, created_at AS at, amount_paise AS amt FROM udhaar_entries WHERE amount_paise <> 0`)).rows;
+  const loose = new Map<string, { at: Date; paise: number }[]>();
+  const addLoose = (buyer: string, at: Date, paise: number) => { const l = loose.get(buyer) ?? []; l.push({ at, paise }); loose.set(buyer, l); };
+  // A negative entry is jama: the shop holds the grahak's money, which pays off their dues.
+  for (const e of entries) if (n(e.amt) < 0) addLoose(e.buyer_id, e.at, -n(e.amt));
+  for (const r of (await tx.query<{ buyer_id: string; at: Date; amt: string }>(
+    `SELECT lc.buyer_id, lc.created_at AS at, lc.amount_paise AS amt FROM ${LIVE_COLS} lc
+     WHERE lc.bill_id IS NULL OR NOT EXISTS (SELECT 1 FROM ${LIVE_BILLS} lb WHERE lb.id = lc.bill_id)`)).rows) addLoose(r.buyer_id, r.at, n(r.amt));
+  for (const l of loose.values()) l.sort((x, y) => x.at.getTime() - y.at.getTime());
+  const by = new Map<string, OpenDue[]>();
+  const add = (buyer: string, d: OpenDue) => { const l = by.get(buyer) ?? []; l.push(d); by.set(buyer, l); };
+  for (const e of entries) if (n(e.amt) > 0) add(e.buyer_id, { billId: null, slipNo: null, date: istDay(e.at), at: e.at, totalPaise: n(e.amt),
+    paidAtCounterPaise: 0, collectedOnSlipPaise: 0, receivedPaise: 0, openPaise: n(e.amt) });
+  for (const b of slips) add(b.buyer_id, { billId: b.id, slipNo: b.slip_no, date: b.day, at: b.at, totalPaise: n(b.total),
+    paidAtCounterPaise: n(b.paid), collectedOnSlipPaise: n(b.collected), receivedPaise: 0, openPaise: n(b.total) - n(b.paid) - n(b.collected) });
+  for (const dues of by.values()) dues.sort((x, y) => Number(!!x.billId) - Number(!!y.billId) || x.at.getTime() - y.at.getTime());
+  return { by, loose };
 }
 
 type BookLine = { id: string; date: string; at: string; kind: 'bikri' | 'vasooli' | 'in' | 'out'; title: string; party: string; note: string; inPaise: number; outPaise: number; auto: boolean };

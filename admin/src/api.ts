@@ -155,6 +155,8 @@ export type DayEntry = {
   payMode: string; staff: string; voided: string | null; note?: string; mode?: string
   /** A slip refunded after its day: it still counts here, and the money went out on the refund's day. */
   lateRefund?: boolean
+  /** A udhaar slip: how much of it the grahak's money given before it (advance, on-account vasooli) paid off. */
+  jamaPaise?: number
 }
 
 export type Me = { phone: string; admin: boolean; shopIds: string[] | null; labourShopIds?: string[]; partnerShopIds?: string[] }
