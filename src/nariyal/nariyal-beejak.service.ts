@@ -13,10 +13,14 @@ import { uuidv7 } from '../common/uuid';
 export const NOT_NARIYAL = 'Yeh sirf Nariyal dukaan ke liye hai';
 export const NOT_COMMISSION = 'Yeh gaadi Commission ki nahi hai';
 
-/** The kharcha heads: a % of the gross, ₹ a dana, or a flat ₹. */
+/**
+ * The kharcha heads: a % of the gross, ₹ a dana, or a flat ₹. Mazdoori is a flat ₹ the shop
+ * types (owner, 2026-11); an app from before that still sends it as a rate a dana with no
+ * amountPaise, and is worked out as rate x dana sold (see [headAmount]), never dropped to 0.
+ */
 export const NARIYAL_BEEJAK_HEADS = [
   { key: 'commission', kind: 'pct' },
-  { key: 'mazdoori', kind: 'dana' },
+  { key: 'mazdoori', kind: 'flat', legacy: 'dana' },
   { key: 'bhada', kind: 'flat' },
   { key: 'dak', kind: 'flat' },
   { key: 'other', kind: 'flat' },
@@ -36,6 +40,23 @@ export const NariyalBeejakBody = z.object({
   })).max(20),
 });
 export type NariyalBeejakInput = z.infer<typeof NariyalBeejakBody>;
+
+type Head = (typeof NARIYAL_BEEJAK_HEADS)[number];
+
+/**
+ * One kharcha head as saved: its kind, rate and amount. A flat head with a `legacy` kind that
+ * arrives the old way (a rate, no amountPaise: an app from before mazdoori went flat) is worked
+ * out the old way, so an old terminal's mazdoori is rate x dana and never silently 0.
+ */
+export function headAmount(head: Head, h: { rate?: number; amountPaise?: number } | undefined, gross: number, dana: number) {
+  const legacy = 'legacy' in head && h?.amountPaise === undefined && h?.rate !== undefined;
+  const kind: string = legacy ? head.legacy : head.kind;
+  const rate = kind === 'flat' ? null : Math.max(0, h?.rate ?? 0);
+  const amountPaise = kind === 'pct' ? Math.round((gross * rate!) / 10_000)
+    : kind === 'dana' ? rate! * dana
+      : Math.max(0, h?.amountPaise ?? 0);
+  return { key: head.key, kind, rate, amountPaise };
+}
 
 const GRADE_LABEL: Record<string, string> = { '1': 'I', '2': 'II', '3': 'III', mix: 'Mix' };
 
@@ -156,14 +177,7 @@ export class NariyalBeejakService {
     for (const head of NARIYAL_BEEJAK_HEADS) {
       if (head.kind === 'pct' && (given.get(head.key)?.rate ?? 0) > 10_000) throw new BadRequestException('Commission 100% se zyada nahi ho sakta');
     }
-    const expenses = NARIYAL_BEEJAK_HEADS.map((head) => {
-      const h = given.get(head.key);
-      const rate = head.kind === 'flat' ? null : Math.max(0, h?.rate ?? 0);
-      const amountPaise = head.kind === 'pct' ? Math.round((gross * rate!) / 10_000)
-        : head.kind === 'dana' ? rate! * dana
-          : Math.max(0, h?.amountPaise ?? 0);
-      return { key: head.key, kind: head.kind, rate, amountPaise };
-    });
+    const expenses = NARIYAL_BEEJAK_HEADS.map((head) => headAmount(head, given.get(head.key), gross, dana));
     const spent = expenses.reduce((s, e) => s + e.amountPaise, 0);
     return this.db.withShop(shopId, async (tx) => {
       await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended('nariyal-beejak:' || $1::text, 0))`, [shopId]);
