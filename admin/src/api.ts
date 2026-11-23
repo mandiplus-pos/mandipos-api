@@ -103,7 +103,8 @@ export type ShopDetail = Omit<Shop, 'devices'> & {
 
 export type Summary = {
   from: string; to: string
-  salesPaise: number; slips: number; nags: number; cashPaise: number; upiPaise: number; creditLeftPaise: number
+  /** Nariyal: sales leave out the rickshaw fare (rikshawPaise, shown on its own); cash / UPI keep it. */
+  salesPaise: number; rikshawPaise: number; slips: number; nags: number; cashPaise: number; upiPaise: number; creditLeftPaise: number
   collectedCashPaise: number; collectedUpiPaise: number; collections: number
   labourPaise: number; spoiledNags: number; daybookInPaise: number; daybookOutPaise: number
   deletedSlips: number; deletedPaise: number
@@ -152,6 +153,8 @@ export type DayEntry = {
   kind: 'slip' | 'payment' | 'in' | 'out'; id: string; at: string; date: string
   title: string; party: string; buyerId: string | null; nags: number
   amountPaise: number; cashPaise: number; upiPaise: number; udhaarPaise: number
+  /** Nariyal slip: the rickshaw fare inside amountPaise (not bikri; the rickshaw wala's). */
+  rikshawPaise?: number
   payMode: string; staff: string; voided: string | null; note?: string; mode?: string
   /** A slip refunded after its day: it still counts here, and the money went out on the refund's day. */
   lateRefund?: boolean
@@ -161,7 +164,7 @@ export type DayEntry = {
 
 export type Me = { phone: string; admin: boolean; shopIds: string[] | null; labourShopIds?: string[]; partnerShopIds?: string[] }
 export type Buckets = { d0_7: number; d8_30: number; d31: number }
-export type DashTotals = { salesPaise: number; slips: number; cashPaise: number; upiPaise: number; udhaarPaise: number; purchasePaise: number; gaadis: number }
+export type DashTotals = { salesPaise: number; rikshawPaise: number; slips: number; cashPaise: number; upiPaise: number; udhaarPaise: number; purchasePaise: number; gaadis: number }
 export type Dashboard = {
   from: string; to: string
   /** cash/upi: paid at the counter on the period's slips; udhaar: what those slips wrote on credit (total less paid). */
