@@ -26,6 +26,17 @@ export const DAY_COLS = `(SELECT * FROM collections c WHERE NOT EXISTS (SELECT 1
   OR EXISTS (SELECT 1 FROM collection_voids cv JOIN bill_voids bv ON bv.bill_id = c.bill_id AND bv.reason = 'refunded'
              WHERE cv.collection_id = c.id AND bv.bill_id IN ${LATE_REFUNDED}
                AND cv.created_at BETWEEN bv.created_at - interval '1 minute' AND bv.created_at + interval '1 minute'))`;
+/**
+ * A slip's sale (the app's Kul bikri, Store.summary): its total less the nariyal rickshaw fare, which
+ * the grahak pays back for the shop to hand the rickshaw wala and is not bikri (rikshaw_paise is 0 on
+ * every other shop: sync and the portal write it only for nariyal). The fare is NOT taken out of the
+ * slip's cash, UPI or udhaar: those stay what was paid and written (cash + UPI + udhaar − rikshaw =
+ * bikri, GaadiReport), so the galla and the bank still hold a fare paid in cash or UPI. [b] is the
+ * slips' alias; '' for unqualified columns.
+ */
+export const SALE = (b = 'lb') => `(${b ? `${b}.` : ''}total_paise - ${b ? `${b}.` : ''}rikshaw_paise)`;
+/** The rickshaw fare on a slip, reported on its own line beside the sale (the app's Rikshaw mazdoori). */
+export const RIKSHAW = (b = 'lb') => `${b ? `${b}.` : ''}rikshaw_paise`;
 export const CASH_PART = `CASE WHEN cash_paise + upi_paise > 0 THEN cash_paise WHEN pay_mode = 'cash' THEN amount_paise ELSE 0 END`;
 export const UPI_PART = `CASE WHEN cash_paise + upi_paise > 0 THEN upi_paise WHEN pay_mode IN ('upi', 'card') THEN amount_paise ELSE 0 END`;
 /** Per grahak: what they owe (positive) or the shop holds for them (negative). */

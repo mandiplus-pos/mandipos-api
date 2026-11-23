@@ -6,7 +6,7 @@ import { fyOf, fyRange, CreditorsService } from './creditors.service';
 import { BEEJAK_HEADS, InsightsService, NOT_EXPENSE, TRUCK_COST } from './insights.service';
 import { BUILTIN_HEADS, OPENING_NOTES, type HeadType } from './masters.service';
 import { ReportsService, nameKey, type Pot } from './reports.service';
-import { BOUGHT, CASH_PART, IST_DAY, LIVE_BILLS, LIVE_COLS, UPI_PART, n } from './sql';
+import { BOUGHT, CASH_PART, IST_DAY, LIVE_BILLS, LIVE_COLS, SALE, UPI_PART, n } from './sql';
 import { writeXlsx, type Cell } from './xlsx';
 import { isAngoor, isCheeku } from '../common/commodity';
 import { CheekuCreditorsService } from '../cheeku/cheeku-creditors.service';
@@ -578,7 +578,7 @@ export class BooksService {
     const bucket = (col: string) => (by === 'day' ? `${col}::text` : `to_char(${col}, 'YYYY-MM')`);
     return this.db.withShop(shopId, async (tx) => {
       const q = async (sql: string, params: unknown[] = [from, to]) => (await tx.query<{ b: string; s: string; k?: string; d?: string }>(sql, params)).rows;
-      const sales = await q(`SELECT ${bucket('lb.business_date')} AS b, SUM(lb.total_paise - lb.rikshaw_paise) AS s FROM ${LIVE_BILLS} lb WHERE lb.business_date BETWEEN $1 AND $2 GROUP BY 1`);
+      const sales = await q(`SELECT ${bucket('lb.business_date')} AS b, SUM(${SALE()}) AS s FROM ${LIVE_BILLS} lb WHERE lb.business_date BETWEEN $1 AND $2 GROUP BY 1`);
       const cogs = await q(`SELECT ${bucket('lb.business_date')} AS b, SUM(l.qty * tc.cost::numeric / NULLIF(tc.recv, 0)) AS s
         FROM bill_lines l JOIN ${LIVE_BILLS} lb ON lb.id = l.bill_id JOIN (${TRUCK_COST}) tc ON tc.id = l.truck_id WHERE lb.business_date BETWEEN $1 AND $2 GROUP BY 1`);
       const spoiled = await q(`SELECT ${bucket('s.business_date')} AS b, SUM(s.qty * tc.cost::numeric / NULLIF(tc.recv, 0)) AS s

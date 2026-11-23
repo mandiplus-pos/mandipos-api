@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Db, Tx } from '../db/db.service';
-import { BOUGHT, CASH_PART, DAY_BILLS, DAY_COLS, IST_DAY, LIVE_BILLS, LIVE_COLS, UPI_PART, n, supplierJvs } from './sql';
+import { BOUGHT, CASH_PART, DAY_BILLS, DAY_COLS, IST_DAY, LIVE_BILLS, LIVE_COLS, RIKSHAW, SALE, UPI_PART, n, supplierJvs } from './sql';
 
 /**
  * Tally's reports for one shop, read off the books the terminals sync. Each one ports the
@@ -424,21 +424,21 @@ export class ReportsService {
         // that day (total less paid; vasooli taken since does not shrink it), as the app's Hisab.
         // A slip keeps its own cash/UPI columns (CASH_PART/UPI_PART are the collections' split).
         // A slip refunded after its day still counts on it (DAY_BILLS), owing nothing (Store.summary).
-        const s = (await tx.query<{ sales: string; slips: string; cash: string; upi: string; udhaar: string }>(
-          `SELECT COALESCE(SUM(total_paise - rikshaw_paise), 0) AS sales, COUNT(*) AS slips,
+        const s = (await tx.query<{ sales: string; rikshaw: string; slips: string; cash: string; upi: string; udhaar: string }>(
+          `SELECT COALESCE(SUM(${SALE()}), 0) AS sales, COALESCE(SUM(${RIKSHAW()}), 0) AS rikshaw, COUNT(*) AS slips,
                   COALESCE(SUM(cash_paise), 0) AS cash, COALESCE(SUM(upi_paise), 0) AS upi,
                   COALESCE(SUM(GREATEST(0, total_paise - paid_paise)) FILTER (WHERE NOT EXISTS (SELECT 1 FROM bill_voids v WHERE v.bill_id = lb.id)), 0) AS udhaar
            FROM ${DAY_BILLS} lb WHERE business_date BETWEEN $1 AND $2`, [a, b])).rows[0];
         const p = await this.purchases(tx, a, b);
         return {
-          salesPaise: n(s.sales), slips: n(s.slips), cashPaise: n(s.cash), upiPaise: n(s.upi), udhaarPaise: n(s.udhaar),
+          salesPaise: n(s.sales), rikshawPaise: n(s.rikshaw), slips: n(s.slips), cashPaise: n(s.cash), upiPaise: n(s.upi), udhaarPaise: n(s.udhaar),
           purchasePaise: p.reduce((t, x) => t + x.paise, 0), gaadis: p.reduce((t, x) => t + x.gaadis, 0),
         };
       };
       const now = await totals(from, to);
       const before = await totals(prevFrom, prevDay(from));
       const sales = (await tx.query<{ d: string; s: string }>(
-        `SELECT d::date::text AS d, COALESCE(SUM(lb.total_paise - lb.rikshaw_paise), 0) AS s FROM generate_series($1::date, $2::date, interval '1 day') d
+        `SELECT d::date::text AS d, COALESCE(SUM(${SALE()}), 0) AS s FROM generate_series($1::date, $2::date, interval '1 day') d
          LEFT JOIN ${DAY_BILLS} lb ON lb.business_date = d::date GROUP BY d ORDER BY d`, [trendFrom, to])).rows;
       const buys = new Map((await this.purchases(tx, trendFrom, to)).map((p) => [p.day, p.paise]));
       const receivables = await this.receivables(tx, today);

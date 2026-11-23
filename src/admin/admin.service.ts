@@ -10,7 +10,7 @@ import { jamaBeforeSlip } from './reports.service';
  *  - a grahak's baaki is their unpaid slips plus udhaar entries minus everything they paid.
  */
 
-import { BALANCES, CASH_PART, DAY_BILLS, DAY_COLS, IST_DAY, LATE_REFUNDED, LIVE_BILLS, LIVE_COLS, MOBILE, OPENING_NOTES, UPI_PART, day, n } from './sql';
+import { BALANCES, CASH_PART, DAY_BILLS, DAY_COLS, IST_DAY, LATE_REFUNDED, LIVE_BILLS, LIVE_COLS, MOBILE, OPENING_NOTES, RIKSHAW, SALE, UPI_PART, day, n } from './sql';
 
 type KhataRow = { id: string; at: string; date: string; kind: 'slip' | 'payment' | 'udhaar'; title: string; detail: string; nags: number; debitPaise: number; creditPaise: number; lines?: { brand: string; grade: string; qty: number; ratePaise: number; leak: boolean }[]; charges?: { label: string; paise: number } };
 
@@ -48,7 +48,7 @@ export class AdminService {
       // Few shops, each a cheap indexed sum; row-level security needs one scope per shop anyway.
       const today = approved
         ? await this.db.withShop(r.id, async (tx) => n((await tx.query<{ s: string }>(
-          `SELECT COALESCE(SUM(total_paise - rikshaw_paise), 0) AS s FROM ${LIVE_BILLS} lb WHERE business_date = ${IST_DAY('now()')}`)).rows[0].s))
+          `SELECT COALESCE(SUM(${SALE()}), 0) AS s FROM ${LIVE_BILLS} lb WHERE business_date = ${IST_DAY('now()')}`)).rows[0].s))
         : 0;
       out.push({
         id: r.id, name: r.name, mandi: r.mandi, shopNo: r.shop_no, gstin: r.gstin, commodity: r.commodity, nickname: r.nickname, ownerPhones: r.owner_phones ?? [],
@@ -112,7 +112,8 @@ export class AdminService {
       const one = async (sql: string, params: unknown[] = [from, to]) => (await tx.query<Record<string, string>>(sql, params)).rows[0];
 
       const sales = await one(
-        `SELECT COUNT(*) AS slips, COALESCE(SUM(total_paise - rikshaw_paise),0) AS sales, COALESCE(SUM(cash_paise),0) AS cash, COALESCE(SUM(upi_paise),0) AS upi
+        `SELECT COUNT(*) AS slips, COALESCE(SUM(${SALE()}),0) AS sales, COALESCE(SUM(${RIKSHAW()}),0) AS rikshaw,
+                COALESCE(SUM(cash_paise),0) AS cash, COALESCE(SUM(upi_paise),0) AS upi
          FROM ${DAY_BILLS} lb WHERE business_date BETWEEN $1 AND $2`);
       const nags = await one(
         `SELECT COALESCE(SUM(l.qty),0) AS nags FROM bill_lines l JOIN ${DAY_BILLS} lb ON lb.id = l.bill_id
@@ -153,19 +154,19 @@ export class AdminService {
            FROM trucks t WHERE t.closed_at IS NULL) x`, []);
 
       const series = (await tx.query<{ d: string; sales: string; slips: string }>(
-        `SELECT d::date::text AS d, COALESCE(SUM(lb.total_paise - lb.rikshaw_paise),0) AS sales, COUNT(lb.id) AS slips
+        `SELECT d::date::text AS d, COALESCE(SUM(${SALE()}),0) AS sales, COUNT(lb.id) AS slips
          FROM generate_series($1::date, $2::date, interval '1 day') d
          LEFT JOIN ${DAY_BILLS} lb ON lb.business_date = d::date
          GROUP BY d ORDER BY d`, [from, to])).rows;
       const topBuyers = (await tx.query<{ id: string; name: string; sales: string; slips: string }>(
-        `SELECT lb.buyer_id AS id, MAX(lb.buyer_name) AS name, SUM(lb.total_paise - lb.rikshaw_paise) AS sales, COUNT(*) AS slips
+        `SELECT lb.buyer_id AS id, MAX(lb.buyer_name) AS name, SUM(${SALE()}) AS sales, COUNT(*) AS slips
          FROM ${LIVE_BILLS} lb WHERE lb.buyer_id IS NOT NULL AND business_date BETWEEN $1 AND $2
-         GROUP BY lb.buyer_id ORDER BY SUM(lb.total_paise - lb.rikshaw_paise) DESC LIMIT 5`, [from, to])).rows;
+         GROUP BY lb.buyer_id ORDER BY SUM(${SALE()}) DESC LIMIT 5`, [from, to])).rows;
 
       const cash = n(sales.cash), upi = n(sales.upi);
       return {
         from, to,
-        salesPaise: n(sales.sales), slips: n(sales.slips), nags: n(nags.nags),
+        salesPaise: n(sales.sales), rikshawPaise: n(sales.rikshaw), slips: n(sales.slips), nags: n(nags.nags),
         cashPaise: cash, upiPaise: upi, creditLeftPaise: n(credit.left),
         collectedCashPaise: n(col.cash), collectedUpiPaise: n(col.upi), collections: n(col.n),
         labourPaise: n(labour.paise), spoiledNags: n(spoiled.nags),
@@ -525,9 +526,9 @@ export class AdminService {
     if (from > to) throw new BadRequestException('from must be on or before to');
     await this.requireApproved(shopId);
     return this.db.withShop(shopId, async (tx) => {
-      const slips = (await tx.query<{ id: string; at: Date; day: string; slip_no: number | null; number: string; buyer_id: string | null; buyer_name: string; pay_mode: string; total: string; paid: string; cash: string; upi: string; nags: string; void_reason: string | null; staff: string; late: boolean }>(
+      const slips = (await tx.query<{ id: string; at: Date; day: string; slip_no: number | null; number: string; buyer_id: string | null; buyer_name: string; pay_mode: string; total: string; rikshaw: string; paid: string; cash: string; upi: string; nags: string; void_reason: string | null; staff: string; late: boolean }>(
         `SELECT b.id, b.created_at AS at, b.business_date::text AS day, b.slip_no, b.number, b.buyer_id, b.buyer_name, b.pay_mode,
-                b.total_paise AS total, b.paid_paise AS paid, b.cash_paise AS cash, b.upi_paise AS upi, b.staff_name AS staff,
+                b.total_paise AS total, b.rikshaw_paise AS rikshaw, b.paid_paise AS paid, b.cash_paise AS cash, b.upi_paise AS upi, b.staff_name AS staff,
                 (SELECT COALESCE(SUM(qty), 0) FROM bill_lines l WHERE l.bill_id = b.id) AS nags,
                 (SELECT v.reason FROM bill_voids v WHERE v.bill_id = b.id LIMIT 1) AS void_reason,
                 b.id IN ${LATE_REFUNDED} AS late
@@ -552,6 +553,9 @@ export class AdminService {
           title: `Parchi ${b.slip_no ?? b.number}`, party: b.buyer_name, buyerId: b.buyer_id, nags: n(b.nags),
           // Refunded after its day: still the day's sale (the money left on the refund's day), owing nothing.
           amountPaise: n(b.total), cashPaise: n(b.cash), upiPaise: n(b.upi), udhaarPaise: b.late ? 0 : Math.max(0, n(b.total) - n(b.paid)),
+          // Nariyal: the rickshaw fare inside amountPaise, passed on to the rickshaw wala: the Day Book's
+          // Parchi (bikri) leaves it out and shows it on its own (SALE); cash / UPI / udhaar keep it.
+          rikshawPaise: n(b.rikshaw),
           payMode: b.pay_mode, staff: b.staff, voided: b.late ? null : b.void_reason, lateRefund: b.late,
           jamaPaise: fromJama.get(b.id) ?? 0,
         })),

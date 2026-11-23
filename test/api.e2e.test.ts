@@ -5035,6 +5035,38 @@ describe('nariyal gaadi deal', () => {
     finally { await c.end(); }
   });
 
+  it('reports the rikshaw fare on its own, as the app: out of bikri, still in cash / UPI / udhaar and the galla', async () => {
+    const res = await registerShop('9877900042', 'Nariyal Rikshaw');
+    const shopId = res.me.shop.id as string;
+    await http().post('/v1/admin/auth/otp').send({ phone: '9877900042' }).expect(204);
+    const web = auth((await http().post('/v1/admin/auth/verify').send({ phone: '9877900042', code: OtpService.issuedForTests.get('9877900042') }).expect(200)).body.token);
+    const base = `/v1/admin/shops/${shopId}`;
+    const gaadi = (await http().post(`${base}/entries/gaadi`).set(web).send({ number: 'ka01rk2', supplier: 'Ramu', lots: [{ brandName: 'Kadur', grade: '1', qty: 100, ratePaise: 0 }] }).expect(201)).body;
+    // 10 dana at ₹50 + ₹6 rikshaw = ₹506, paid ₹300 cash + ₹206 UPI.
+    const a = (await http().post(`${base}/entries/parchi`).set(web).send({ truckId: gaadi.truckId, lines: [{ grade: '1', qty: 10, ratePaise: 5000 }],
+      pay: 'split', cashPaise: 30000, upiPaise: 20600, packing: 'loose', labour: false, rikshawPaise: 600 }).expect(201)).body;
+    // 5 dana at ₹40 + ₹3 rikshaw = ₹203, all on udhaar.
+    const b = (await http().post(`${base}/entries/parchi`).set(web).send({ buyerName: 'Raju', truckId: gaadi.truckId, lines: [{ grade: '1', qty: 5, ratePaise: 4000 }],
+      pay: 'credit', packing: 'loose', labour: false, rikshawPaise: 300 }).expect(201)).body;
+    const today = new Date(Date.now() + 5.5 * 3_600_000).toISOString().slice(0, 10);
+    const q = `?from=${today}&to=${today}`;
+    // The app's Hisab (Store.summary): Kul bikri = total − fare; cash, UPI and udhaar stay what the slips
+    // took and wrote (cash + UPI + udhaar − rikshaw = bikri); the fare is its own figure.
+    expect((await http().get(`${base}/summary${q}`).set(web).expect(200)).body).toMatchObject({ salesPaise: 70000, rikshawPaise: 900, cashPaise: 30000, upiPaise: 20600, slips: 2 });
+    expect((await http().get(`${base}/dashboard${q}`).set(web).expect(200)).body.now).toMatchObject({ salesPaise: 70000, rikshawPaise: 900, cashPaise: 30000, upiPaise: 20600, udhaarPaise: 20300 });
+    expect((await http().get(`${base}/munafa${q}`).set(web).expect(200)).body.salesPaise).toBe(70000);
+    expect((await http().get(`${base}/sales-register${q}`).set(web).expect(200)).body.totals).toMatchObject({ cashPaise: 30000, upiPaise: 20600, udhaarPaise: 20300, rikshawPaise: 900, totalPaise: 70000 });
+    // The Day Book rows keep what the grahak paid, and say how much of it is the fare.
+    const slips = (await http().get(`${base}/daybook${q}`).set(web).expect(200)).body.entries.filter((e: any) => e.kind === 'slip');
+    expect(slips.map((e: any) => [e.id, e.amountPaise, e.rikshawPaise, e.cashPaise, e.upiPaise, e.udhaarPaise]).sort()).toEqual([
+      [a.billId, 50600, 600, 30000, 20600, 0], [b.billId, 20300, 300, 0, 0, 20300]].sort());
+    // The galla (the app's expectedCash: cash sale + cash vasooli) holds the cash taken, fare and all; UPI lands in the bank.
+    const galla = (await http().get(`${base}/cashbook?pot=galla${q.replace('?', '&')}`).set(web).expect(200)).body;
+    expect(galla.lines.filter((l: any) => l.kind === 'bikri').map((l: any) => l.inPaise)).toEqual([30000]);
+    const bank = (await http().get(`${base}/cashbook?pot=bank${q.replace('?', '&')}`).set(web).expect(200)).body;
+    expect(bank.lines.filter((l: any) => l.kind === 'bikri').map((l: any) => l.inPaise)).toEqual([20600]);
+  });
+
   it('makes a beejak for a Commission gaadi only, in a nariyal shop only', async () => {
     const shop = (await registerShop('9877900003', 'Nariyal Beejak')).accessToken;
     const t = new Date().toISOString();
