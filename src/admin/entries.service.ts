@@ -78,6 +78,34 @@ async function notPickedUp(tx: Tx, billId: string) {
   if (n(r.rows[0].n) > 0) throw new UnprocessableEntityException('Maal uth chuka hai — yeh parchi ab nahi badlegi');
 }
 
+/**
+ * Nariyal: a parchi scanned back (Parchi wapas) is final, as in the app (Store.isNariyalReturned):
+ * its own scan, or one on the parchi it was corrected from (same slip number, 'edited' void). A
+ * scan taken back ("Scan galat tha", nariyal_return_voids) no longer counts.
+ */
+async function notScannedBack(tx: Tx, billId: string) {
+  const r = await tx.query(
+    `SELECT 1 FROM nariyal_returns r
+     WHERE (r.bill_id = $1 OR r.bill_id IN (SELECT v.bill_id FROM bill_voids v JOIN bills b ON b.slip_no = v.slip_no
+                                            WHERE v.reason = 'edited' AND b.id = $1))
+       AND NOT EXISTS (SELECT 1 FROM nariyal_return_voids x WHERE x.return_id = r.id)
+     LIMIT 1`, [billId]);
+  if (r.rowCount) throw new UnprocessableEntityException('Parchi scan ho chuki — ab nahi badlegi');
+}
+
+/** A refund that can't come out of the slip's own day: an earlier day, or one already closed (Store.isLateRefund). */
+async function isLateRefund(tx: Tx, day: string): Promise<boolean> {
+  if (day < todayIst()) return true;
+  return !!(await tx.query(`SELECT 1 FROM day_closes WHERE business_date = $1::date LIMIT 1`, [day])).rowCount;
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** "Parchi #N refund (22 Nov ki)": the app's late-refund line (Store.lateRefundNote); the app keys the old day on it. */
+export function lateRefundNote(slipNo: number, day: string): string {
+  const [, m, d] = day.slice(0, 10).split('-');
+  return `Parchi #${slipNo} refund (${d} ${MONTHS[Number(m) - 1] ?? m} ki)`;
+}
+
 @Injectable()
 export class EntriesService {
   constructor(
@@ -175,6 +203,7 @@ export class EntriesService {
       const b = await liveBill(tx, billId);
       if ((await collectedOn(tx, billId)).rows.length) throw new UnprocessableEntityException('Is parchi par vasooli ho chuki hai — badal nahi sakte, sirf hata sakte hain');
       await notPickedUp(tx, billId);
+      await notScannedBack(tx, billId);
       return b;
     });
     return this.writeParchi(p, shopId, input, old);
@@ -428,10 +457,14 @@ export class EntriesService {
    */
   async voidBill(phone: string, shopId: string, billId: string, reason: 'deleted' | 'refunded' | 'advance') {
     const p = await this.device(phone, shopId);
-    const { b, later, receiptNo } = await this.db.withShop(shopId, async (tx) => {
+    const { b, later, receiptNo, late } = await this.db.withShop(shopId, async (tx) => {
       const b = await liveBill(tx, billId);
       await notPickedUp(tx, billId);
-      return { b, later: await collectedOn(tx, billId), receiptNo: await nextNumber(tx, 'collections', 'receipt_no', 'collection_voids') };
+      await notScannedBack(tx, billId);
+      return {
+        b, later: await collectedOn(tx, billId), receiptNo: await nextNumber(tx, 'collections', 'receipt_no', 'collection_voids'),
+        late: await isLateRefund(tx, b.day.slice(0, 10)),
+      };
     });
     const [cash, upi] = billMoney(b);
     const money = n(b.paid_paise) + later.cash + later.upi;
@@ -448,9 +481,17 @@ export class EntriesService {
         id: uuidv7(), created_at: now, collection_id: c.id, receipt_no: c.receipt_no, reason: 'deleted',
       } });
       const upiBack = upi + later.upi;
-      if (upiBack > 0) {
+      const party = b.buyer_id ? b.buyer_name : '';
+      if (late) {
+        // An earlier or closed day keeps its figures (the app reads them off the void's snapshot):
+        // everything goes back from today's galla in one line, which also tells the app that the
+        // old day keeps the slip. All of it in cash, as below.
+        items.push({ table: 'daybook_entries', txn, row: {
+          id: uuidv7(), created_at: now, updated_at: now, direction: 'out', mode: 'cash', category: 'aur_gaya', party_name: party,
+          note: lateRefundNote(b.slip_no ?? 0, b.day), amount_paise: money, business_date: todayIst(), hidden: false,
+        } });
+      } else if (upiBack > 0) {
         const slip = `Parchi #${b.slip_no ?? 0}`;
-        const party = b.buyer_id ? b.buyer_name : '';
         for (const [direction, mode, category, note] of [['in', 'upi', 'aur_aaya', `${slip} wapas · UPI aaya tha`], ['out', 'cash', 'aur_gaya', `${slip} refund · cash diya`]]) {
           items.push({ table: 'daybook_entries', txn, row: {
             id: uuidv7(), created_at: now, updated_at: now, direction, mode, category, party_name: party, note,
@@ -472,7 +513,7 @@ export class EntriesService {
     }
     const results = await this.push(p, shopId, items);
     return {
-      billId: b.id, slipNo: b.slip_no, reason,
+      billId: b.id, slipNo: b.slip_no, reason, late: reason === 'refunded' && late,
       // What goes back over the counter: all of it in cash (the UPI part stays in the bank).
       refundPaise: reason === 'refunded' ? money : 0,
       advance: advance && { ...advance, receiptNo: results.find((r) => r.id === advance!.id)?.renumbered?.to ?? advance.receiptNo, amountPaise: cash + upi },
