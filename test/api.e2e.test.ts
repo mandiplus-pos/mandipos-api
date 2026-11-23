@@ -60,6 +60,11 @@ beforeAll(async () => {
   app = mod.createNestApplication({ bodyParser: false });
   configure(app);
   await app.init();
+  // Listen once, on 127.0.0.1 itself. Handed an idle server, supertest would listen(0) on
+  // [::] for every request and close it after; on macOS that wildcard port can be one another
+  // process (a Gradle daemon, say) holds on 127.0.0.1, and supertest dials 127.0.0.1, so the
+  // request lands there: "socket hang up", "Parse Error: Expected HTTP/", or a stray 404.
+  await app.listen(0, '127.0.0.1');
 });
 
 afterAll(async () => {
