@@ -4962,6 +4962,52 @@ describe('nariyal gaadi deal', () => {
     finally { await c.end(); }
   });
 
+  it('takes a wrong Maal diya scan back (Scan galat tha), and refunds a parchi from a closed day out of today', async () => {
+    const t = new Date().toISOString();
+    const today = new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
+    const yesterday = new Date(Date.parse(today) - 86_400_000).toISOString().slice(0, 10);
+    const res = await registerShop('9877900051', 'Nariyal Refund');
+    const term = auth(res.accessToken);
+    const base = `/v1/admin/shops/${res.me.shop.id}`;
+    await http().post('/v1/admin/auth/otp').send({ phone: '9877900051' }).expect(204);
+    const web = auth((await http().post('/v1/admin/auth/verify').send({ phone: '9877900051', code: OtpService.issuedForTests.get('9877900051') }).expect(200)).body.token);
+    // Yesterday's paid parchi (₹100 cash), scanned back by mistake.
+    const billId = uuidv7();
+    await http().post('/v1/sync/push').set(term).send({ items: [{ table: 'bills', row: { id: billId, created_at: t, number: 'R1/2627/000001', kind: 'kachchi',
+      buyer_name: 'Cash', business_date: yesterday, pay_mode: 'cash', total_paise: 10000, paid_paise: 10000, cash_paise: 10000, slip_no: 1 } }] }).expect(200);
+    const scan = (id: string) => ({ table: 'nariyal_returns', row: { id, created_at: t, bill_id: billId } });
+    const unscan = (returnId: string, bill = billId) => ({ table: 'nariyal_return_voids', row: { id: uuidv7(), created_at: t, return_id: returnId, bill_id: bill, staff_name: 'Ramesh' } });
+    const s1 = uuidv7();
+    expect((await http().post('/v1/sync/push').set(term).send({ items: [scan(s1)] }).expect(200)).body.results[0].status).toBe('applied');
+    // Scanned back: the website can neither change nor delete it, as in the app.
+    await http().post(`${base}/bills/${billId}/void`).set(web).send({ reason: 'refunded' }).expect(422);
+    // Scan galat tha: the scan is taken back (a parchi this shop never made is turned away)...
+    expect((await http().post('/v1/sync/push').set(term).send({ items: [unscan(s1, uuidv7())] }).expect(200)).body.results[0])
+      .toMatchObject({ status: 'rejected', error: 'parchi not found' });
+    expect((await http().post('/v1/sync/push').set(term).send({ items: [unscan(s1)] }).expect(200)).body.results[0].status).toBe('applied');
+    // ...so a new scan of the same parchi is kept, not skipped as a repeat; then that one is taken back too.
+    const s2 = uuidv7();
+    expect((await http().post('/v1/sync/push').set(term).send({ items: [scan(s2)] }).expect(200)).body.results[0].status).toBe('applied');
+    expect((await http().post('/v1/sync/push').set(term).send({ items: [unscan(s2)] }).expect(200)).body.results[0].status).toBe('applied');
+    const feed = (await http().get('/v1/sync/pull?after=0&limit=500').set(term).expect(200)).body.changes as any[];
+    expect(feed.filter((c) => c.table === 'nariyal_return_voids').map((c) => c.row.return_id).sort()).toEqual([s1, s2].sort());
+
+    // Not scanned any more: refunded today. Yesterday is not rewritten; the money leaves today, in one line.
+    const out = (await http().post(`${base}/bills/${billId}/void`).set(web).send({ reason: 'refunded' }).expect(200)).body;
+    expect(out).toMatchObject({ refundPaise: 10000, late: true });
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const note = `Parchi #1 refund (${yesterday.slice(8, 10)} ${months[Number(yesterday.slice(5, 7)) - 1]} ki)`;
+    const day = (await http().get(`${base}/daybook?from=${today}&to=${today}`).set(web).expect(200)).body.entries;
+    expect(day.filter((e: any) => e.kind === 'in' || e.kind === 'out').map((e: any) => [e.kind, e.title, e.mode, e.amountPaise, e.note])).toEqual([
+      ['out', 'aur_gaya', 'cash', 10000, note],
+    ]);
+
+    // A cheeku shop can't take a scan back (nariyal only).
+    const s = await login('9877900052');
+    const cheeku = (await createApproved(s.accessToken, { name: 'Cheeku Unscan', mandi: 'Azadpur', shopNo: '1', role: 'owner', commodity: 'cheeku' })).accessToken;
+    expect((await http().post('/v1/sync/push').set(auth(cheeku)).send({ items: [unscan(uuidv7(), uuidv7())] }).expect(200)).body.results[0].status).toBe('rejected');
+  });
+
   it('keeps the rikshaw fare out of the website bikri, and a website edit keeps the app remark', async () => {
     const res = await registerShop('9877900041', 'Nariyal Web');
     const shopId = res.me.shop.id as string;
