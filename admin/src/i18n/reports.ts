@@ -262,4 +262,9 @@ export const REPORTS: Record<string, readonly [string, string]> = {
   'Rakam + tarikh se': ['By amount + date', 'रकम + तारीख से'],
   'Kuch nahi': ['Nothing', 'कुछ नहीं'],
   'Statement mein balance column nahi, isliye bank ka opening / closing nahi dikh sakta': ['The statement has no balance column, so the bank opening / closing cannot be shown', 'स्टेटमेंट में बैलेंस कॉलम नहीं, इसलिए बैंक का ओपनिंग / क्लोजिंग नहीं दिख सकता'],
+  // Grahak: jama (advance)
+  'Jama (advance)': ['Advance (jama)', 'जमा (एडवांस)'],
+  'Kul jama': ['Total advance', 'कुल जमा'],
+  'Jama': ['Advance', 'जमा'],
+  'Kisi grahak ka jama nahi': ['No customer has an advance', 'किसी ग्राहक का जमा नहीं'],
 }

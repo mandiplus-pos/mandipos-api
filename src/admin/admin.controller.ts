@@ -1116,8 +1116,8 @@ export class AdminController {
   }
 
   @Get('shops/:id/buyers')
-  async buyers(@See() v: Viewer, @Param('id') id: string, @Query('q') q?: string, @Query('area') area?: string, @Query('all') all?: string) {
-    return { buyers: await this.admin.buyers(mine(v, id), (q ?? '').trim().slice(0, 60), (area ?? '').slice(0, 60), all === '1') };
+  async buyers(@See() v: Viewer, @Param('id') id: string, @Query('q') q?: string, @Query('area') area?: string, @Query('all') all?: string, @Query('jama') jama?: string) {
+    return { buyers: await this.admin.buyers(mine(v, id), (q ?? '').trim().slice(0, 60), (area ?? '').slice(0, 60), all === '1', jama === '1') };
   }
 
   @Get('shops/:id/buyers/:buyerId')

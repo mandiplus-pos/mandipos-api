@@ -5457,3 +5457,37 @@ describe('walk-in udhaar', () => {
       .send({ buyerId: raju, truckId, lines: [{ grade: '1', qty: 4, ratePaise: 2500 }], packing: 'loose', pay: 'credit' }).expect(201);
   });
 });
+
+describe('grahak jama', () => {
+  const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
+  it('lists the grahak the shop owes, biggest jama first, with the balance their khata shows', async () => {
+    const shop = await registerShop('9811122202', 'Jama Traders');
+    const id = shop.me.shop.id as string;
+    const t = new Date().toISOString();
+    const brandId = uuidv7(), truckId = uuidv7(), asha = uuidv7(), bablu = uuidv7(), chotu = uuidv7();
+    await http().post('/v1/sync/push').set(auth(shop.accessToken)).send({ items: [
+      { table: 'brands', row: { id: brandId, created_at: t, updated_at: t, name: 'Pollachi' } },
+      { table: 'buyers', row: { id: asha, created_at: t, updated_at: t, name: 'Asha' } },
+      { table: 'buyers', row: { id: bablu, created_at: t, updated_at: t, name: 'Bablu' } },
+      { table: 'buyers', row: { id: chotu, created_at: t, updated_at: t, name: 'Chotu' } },
+      { table: 'trucks', row: { id: truckId, created_at: t, updated_at: t, number: 'TN09', supplier: 'Mani', arrived_at: t } },
+      { table: 'truck_grades', row: { id: uuidv7(), created_at: t, truck_id: truckId, brand_id: brandId, grade: '1', billed_qty: 500, received_qty: 500, rate_paise: 2000 } },
+    ] }).expect(200);
+    await http().post('/v1/admin/auth/otp').send({ phone: '9811122202' }).expect(204);
+    const web = auth((await http().post('/v1/admin/auth/verify').send({ phone: '9811122202', code: OtpService.issuedForTests.get('9811122202') }).expect(200)).body.token);
+    const base = `/v1/admin/shops/${id}`;
+    // Asha pays 3,000 ahead and buys 909 on udhaar: 2,091 jama. Bablu pays 500 ahead: 500 jama.
+    // Chotu buys 1,000 on udhaar: baaki, not on the list.
+    await http().post(`${base}/entries/vasooli`).set(web).send({ buyerId: asha, cashPaise: 300000, upiPaise: 0 }).expect(201);
+    await http().post(`${base}/entries/parchi`).set(web).send({ buyerId: asha, truckId, lines: [{ grade: '1', qty: 1, ratePaise: 90900 }], pay: 'credit', packing: 'loose', labour: false }).expect(201);
+    await http().post(`${base}/entries/vasooli`).set(web).send({ buyerId: bablu, cashPaise: 50000, upiPaise: 0 }).expect(201);
+    await http().post(`${base}/entries/parchi`).set(web).send({ buyerId: chotu, truckId, lines: [{ grade: '1', qty: 1, ratePaise: 100000 }], pay: 'credit', packing: 'loose', labour: false }).expect(201);
+
+    const list = (await http().get(`${base}/buyers?all=1&jama=1`).set(web).expect(200)).body.buyers as any[];
+    expect(list.map((b) => [b.name, b.balancePaise])).toEqual([['Asha', -209100], ['Bablu', -50000]]);
+    // The same number the khata page shows.
+    for (const b of list) expect((await http().get(`${base}/buyers/${b.id}`).set(web).expect(200)).body.totals.balancePaise).toBe(b.balancePaise);
+    // The full list still has everyone.
+    expect(((await http().get(`${base}/buyers?all=1`).set(web).expect(200)).body.buyers as any[]).length).toBe(3);
+  });
+});
