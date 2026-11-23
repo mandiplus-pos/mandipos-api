@@ -5149,3 +5149,111 @@ describe('nariyal gaadi deal', () => {
     expect(await paidOf(other)).toEqual({ at: null, by: null });
   });
 });
+
+describe('bank statement and reconciliation (partner)', () => {
+  const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
+  const shift = (iso: string, k: number) => new Date(Date.parse(`${iso}T00:00:00Z`) + k * 86_400_000).toISOString().slice(0, 10);
+  const dmy = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
+  async function portal(phone: string) {
+    await http().post('/v1/admin/auth/otp').send({ phone }).expect(204);
+    return auth((await http().post('/v1/admin/auth/verify').send({ phone, code: OtpService.issuedForTests.get(phone) }).expect(200)).body.token);
+  }
+
+  it('keeps a bank ledger per account, reads a CSV, matches by UTR and by amount + date, and lets a partner read and match but not edit', async () => {
+    const ownerPhone = '9845920001', partnerPhone = '9845920002';
+    const s = await login(ownerPhone);
+    const res = await createApproved(s.accessToken, { name: 'Bank Shop', mandi: 'Azadpur', shopNo: 'B-1', role: 'owner' });
+    const id = res.me.shop.id as string;
+    const base = `/v1/admin/shops/${id}`;
+    const w = await portal(ownerPhone);
+    const day = istDay();
+
+    await http().post(`${base}/settings`).set(w).send({ bankAccounts: [{ bank: 'HDFC', account: '5010 0123 456789', holder: 'Bank Shop' }] }).expect(200);
+    const acct = '50100123456789';
+    expect((await http().get(`${base}/bank`).set(w).expect(200)).body.accounts).toMatchObject([{ key: acct, bank: 'HDFC', opening: null }]);
+    await http().post(`${base}/bank/opening`).set(w).send({ account: 'nope', openingPaise: 0, openingOn: day }).expect(404);
+    await http().post(`${base}/bank/opening`).set(w).send({ account: acct, openingPaise: 100000_00, openingOn: shift(day, -3) }).expect(200);
+
+    // The app's side: a UPI raseed with its UTR, one with no bank picked (the shop has one account),
+    // a bank-mode kharcha, and a cash raseed that never reaches the bank.
+    const g = (await http().post(`${base}/entries/grahak`).set(w).send({ name: 'Raju' }).expect(201)).body;
+    await http().post(`${base}/entries/vasooli`).set(w).send({ buyerId: g.id, cashPaise: 0, upiPaise: 5000_00, upiBank: 'HDFC ··6789', paymentRef: '412345678901' }).expect(201);
+    await http().post(`${base}/entries/vasooli`).set(w).send({ buyerId: g.id, cashPaise: 0, upiPaise: 2500_00 }).expect(201);
+    await http().post(`${base}/entries/daybook`).set(w).send({ direction: 'out', category: 'kharcha', mode: 'bank', amountPaise: 300_00, note: 'bank charges' }).expect(201);
+    await http().post(`${base}/entries/vasooli`).set(w).send({ buyerId: g.id, cashPaise: 100_00, upiPaise: 0 }).expect(201);
+
+    const ledger = (await http().get(`${base}/bank/ledger?account=${acct}`).set(w).expect(200)).body;
+    expect(ledger).toMatchObject({ from: shift(day, -3), openingPaise: 100000_00, inPaise: 7500_00, outPaise: 300_00, closingPaise: 107200_00 });
+    expect(ledger.lines).toHaveLength(3);
+    expect(ledger.lines[ledger.lines.length - 1].balancePaise).toBe(107200_00);
+    expect(ledger.lines.every((l: any) => l.assumed === false)).toBe(true);
+
+    // A partner, put on the team from the website; the app never opens the shop for that number.
+    await http().post(`${base}/branch-team`).set(w).send({ phone: partnerPhone, name: 'Partner Ji', roles: { [id]: 'partner' } }).expect(200);
+    const team = (await http().get('/v1/shops/members').set(auth(res.accessToken)).expect(200)).body;
+    expect(team.members.find((m: any) => m.phone === partnerPhone)).toMatchObject({ role: 'partner' });
+    expect((await login(partnerPhone)).me.shop).toBeNull();
+    const pw = await portal(partnerPhone);
+    expect((await http().get('/v1/admin/me').set(pw).expect(200)).body).toMatchObject({ shopIds: [id], partnerShopIds: [id], labourShopIds: [] });
+
+    // The partner uploads the bank's CSV: preview finds the header under the account lines and guesses the columns.
+    const csv = [
+      'HDFC BANK Ltd.', 'Account No : 50100123456789', '',
+      'Date,Narration,Chq./Ref.No.,Value Dt,Withdrawal Amt.,Deposit Amt.,Closing Balance',
+      `${dmy(day)},UPI-RAJU-raju@okaxis-412345678901-PAYMENT,0000412345678901,${dmy(day)},,"5,000.00","1,05,000.00"`,
+      `${dmy(day)},NEFT-SOMEONE,N99,${dmy(day)},,999.00,"1,05,999.00"`,
+      `${dmy(day)},CHARGES,,${dmy(day)},250.00,,"1,05,749.00"`,
+      `${dmy(shift(day, 1))},UPI-RAJU-raju@okaxis-PAYMENT,,${dmy(shift(day, 1))},,"2,500.00","1,08,249.00"`,
+      'STATEMENT SUMMARY,,,,,,',
+    ].join('\r\n');
+    const pre = (await http().post(`${base}/bank/csv/preview`).set(pw).send({ text: csv }).expect(200)).body;
+    expect(pre).toMatchObject({ headerRow: 3, dateOrder: 'dmy', mapping: { date: 0, narration: 1, ref: 2, debit: 4, credit: 5, balance: 6 } });
+    const up = { account: acct, text: csv, fileName: 'hdfc.csv', headerRow: pre.headerRow, mapping: pre.mapping, dateOrder: pre.dateOrder };
+    expect((await http().post(`${base}/bank/csv/import`).set(pw).send(up).expect(201)).body).toMatchObject({ added: 4, duplicates: 0, skipped: 1 });
+    // The same statement again adds nothing.
+    expect((await http().post(`${base}/bank/csv/import`).set(pw).send(up).expect(201)).body).toMatchObject({ added: 0, duplicates: 4 });
+
+    const rec = async () => (await http().get(`${base}/bank/reconcile?account=${acct}&to=${shift(day, 1)}`).set(pw).expect(200)).body;
+    let r = await rec();
+    expect(r.counts).toEqual({ matched: 2, amountDiffers: 0, bankOnly: 2, appOnly: 1 });
+    expect(r.matched.map((m: any) => [m.how, m.line.amountPaise])).toEqual([['ref', 5000_00], ['amount', 2500_00]]);
+    expect(r.bankOnly.map((l: any) => l.amountPaise).sort()).toEqual([250_00, 999_00]);
+    expect(r.appOnly).toMatchObject([{ kind: 'daybook', direction: 'dr', amountPaise: 300_00 }]);
+    expect(r.statement).toMatchObject({ openingPaise: 100000_00, closingPaise: 108249_00 });
+    expect(r.app).toMatchObject({ openingPaise: 100000_00, closingPaise: 107200_00 });
+    expect(r.difference).toMatchObject({ openingPaise: 0, closingPaise: 1049_00 });
+
+    // A manual pair whose amounts differ shows under "amount differs".
+    const charges = r.bankOnly.find((l: any) => l.amountPaise === 250_00);
+    const kharcha = r.appOnly[0];
+    await http().post(`${base}/bank/match`).set(pw).send({ lineId: charges.id, entryKey: kharcha.key }).expect(204);
+    r = await rec();
+    expect(r.amountDiffers).toMatchObject([{ how: 'manual', diffPaise: 50_00, line: { id: charges.id }, entry: { key: kharcha.key } }]);
+
+    // Taking the automatic amount pair apart keeps it apart.
+    const auto = r.matched.find((m: any) => m.how === 'amount');
+    await http().post(`${base}/bank/unmatch`).set(pw).send({ lineId: auto.line.id, entryKey: auto.entry.key }).expect(204);
+    r = await rec();
+    expect(r.counts).toEqual({ matched: 1, amountDiffers: 1, bankOnly: 2, appOnly: 1 });
+    await http().post(`${base}/bank/match`).set(pw).send({ lineId: auto.line.id, entryKey: auto.entry.key }).expect(204);
+    expect((await rec()).counts).toMatchObject({ matched: 2 });
+
+    // Lines typed by hand, then one voided.
+    const typed = (await http().post(`${base}/bank/lines`).set(pw).send({ account: acct, lines: [{ date: day, direction: 'dr', amountPaise: 300_00, narration: 'typed' }] }).expect(201)).body;
+    expect(typed).toMatchObject({ added: 1 });
+    const typedLine = (await rec()).bankOnly.find((l: any) => l.narration === 'typed');
+    await http().post(`${base}/bank/lines/${typedLine.id}/void`).set(pw).expect(204);
+    expect((await rec()).bankOnly.some((l: any) => l.narration === 'typed')).toBe(false);
+
+    // The partner reads the books but cannot write or change them.
+    await http().get(`${base}/daybook?from=${day}&to=${day}`).set(pw).expect(200);
+    await http().get(`${base}/cashbook?pot=bank&from=${day}&to=${day}`).set(pw).expect(200);
+    await http().get(`${base}/bank/ledger?account=${acct}`).set(pw).expect(200);
+    await http().post(`${base}/entries/vasooli`).set(pw).send({ buyerId: g.id, cashPaise: 100_00, upiPaise: 0 }).expect(403);
+    await http().post(`${base}/entries/daybook`).set(pw).send({ direction: 'out', category: 'kharcha', mode: 'cash', amountPaise: 100 }).expect(403);
+    await http().post(`${base}/settings`).set(pw).send({ name: 'Partner Shop' }).expect(403);
+    await http().post(`${base}/branch-team`).set(pw).send({ phone: '9845920009', roles: { [id]: 'accountant' } }).expect(403);
+    const col = r.matched.find((m: any) => m.how === 'ref').entry.key.slice(4);
+    await http().post(`${base}/collections/${col}/void`).set(pw).send({}).expect(403);
+  });
+});

@@ -95,7 +95,7 @@ export class AdminService {
        WHERE d.shop_id = $1 AND d.revoked_at IS NULL ORDER BY d.last_seen_at DESC NULLS LAST, d.code`, [shopId]);
     return {
       ...s,
-      team: team.map((t) => ({ name: t.name, phone: t.phone, role: t.role === 'owner' ? 'admin' : 'accountant', joinedAt: t.created_at.toISOString() })),
+      team: team.map((t) => ({ name: t.name, phone: t.phone, role: t.role === 'owner' ? 'admin' : t.role === 'partner' ? 'partner' : 'accountant', joinedAt: t.created_at.toISOString() })),
       devices: devices.map((d) => ({
         code: d.code, label: d.label, web: d.platform === 'web', appVersion: d.app_version, phone: d.phone, name: d.name,
         lastSeenAt: d.last_seen_at?.toISOString() ?? null, addedAt: d.created_at.toISOString(),

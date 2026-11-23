@@ -18,14 +18,14 @@ export type MeView = {
 
 export type PendingShop = { id: string; name: string; mandi: string; status: 'pending' | 'rejected'; reason: string; createdAt: string };
 
-/** Memberships that open a shop: only one MandiPlus has approved. */
+/** Memberships that open a shop: only one MandiPlus has approved. A partner signs in to the website only (migration 090). */
 const APPROVED_MEMBERSHIP = `SELECT m.shop_id FROM shop_members m JOIN shops s ON s.id = m.shop_id
-  WHERE m.user_id = $1 AND s.approved_at IS NOT NULL ORDER BY m.created_at LIMIT 1`;
+  WHERE m.user_id = $1 AND s.approved_at IS NOT NULL AND m.role <> 'partner' ORDER BY m.created_at LIMIT 1`;
 
-/** How the app names a role; the table keeps the older words. */
-export type TeamRole = 'admin' | 'accountant' | 'labour';
-const toDb = (r: TeamRole) => (r === 'admin' ? 'owner' : r === 'labour' ? 'labour' : 'munim');
-const fromDb = (r: string): TeamRole => (r === 'owner' ? 'admin' : r === 'labour' ? 'labour' : 'accountant');
+/** How the app names a role; the table keeps the older words. A partner is listed but never opens the shop in the app. */
+export type TeamRole = 'admin' | 'accountant' | 'labour' | 'partner';
+const toDb = (r: TeamRole) => (r === 'admin' ? 'owner' : r === 'labour' || r === 'partner' ? r : 'munim');
+const fromDb = (r: string): TeamRole => (r === 'owner' ? 'admin' : r === 'labour' || r === 'partner' ? r : 'accountant');
 
 /** One account a customer can pay into, printed at the head of their ledger. */
 export type BankAccount = { holder: string; bank: string; ifsc: string; account: string };
@@ -126,7 +126,7 @@ export class AccountsService {
     return this.db.tx(async (tx) => {
       const member = (await tx.query(
         `SELECT 1 FROM shop_members m JOIN shops s ON s.id = m.shop_id
-         WHERE m.shop_id = $1 AND m.user_id = $2 AND s.approved_at IS NOT NULL`, [shopId, p.userId])).rowCount;
+         WHERE m.shop_id = $1 AND m.user_id = $2 AND s.approved_at IS NOT NULL AND m.role <> 'partner'`, [shopId, p.userId])).rowCount;
       if (!member) throw new ForbiddenException('Aap is dukaan mein nahi hain');
 
       let target = p.shopId === shopId ? p.deviceId : undefined;
@@ -440,7 +440,7 @@ export class AccountsService {
     const r = rows[0];
     const shops = (await tx.query<{ id: string; name: string; mandi: string; role: string; commodity: string }>(
       `SELECT s.id, s.name, s.mandi, m.role, s.commodity FROM shop_members m JOIN shops s ON s.id = m.shop_id
-       WHERE m.user_id = $1 AND s.approved_at IS NOT NULL ORDER BY m.created_at`, [p.userId])).rows;
+       WHERE m.user_id = $1 AND s.approved_at IS NOT NULL AND m.role <> 'partner' ORDER BY m.created_at`, [p.userId])).rows;
     // A shop asked for and not yet approved — or turned down — shows whether or not a shop is open.
     const pending = (await tx.query<{ id: string; name: string; mandi: string; rejected_at: Date | null; reject_reason: string; created_at: Date }>(
       `SELECT id, name, mandi, rejected_at, reject_reason, created_at FROM shops
