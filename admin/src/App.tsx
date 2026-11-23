@@ -146,8 +146,18 @@ export const CHEEKU_REPORTS: (typeof REPORTS)[number] = { group: t('Cheeku'), it
   { report: 'cheeku-apmc', label: t('APMC'), key: '', icon: I.IChart },
   { report: 'cheeku-mazdoori', label: t('Mazdoori'), key: '', icon: I.IWallet },
 ] }
+/**
+ * Pages on hold (owner, 2026-11): Balance Sheet and P&L under Reports, and the partner's Bank
+ * khata & milan. Their code, routes and server endpoints stay; only the navigation (sidebar and
+ * Go To) leaves them out, and a partner lands on the Dashboard. Set to false to bring them back.
+ */
+const PAGES_ON_HOLD = true
+const ON_HOLD = new Set<Report>(PAGES_ON_HOLD ? ['balancesheet', 'pnl', 'bank'] : [])
+const withoutOnHold = (groups: typeof REPORTS): typeof REPORTS =>
+  groups.map((g) => ({ ...g, items: g.items.filter((it) => !ON_HOLD.has(it.report)) })).filter((g) => g.items.length > 0)
+
 /** The sidebar's groups for a shop: the grapes desk only where the shop sells grapes; cheeku's own desk for cheeku. */
-export const reportGroups = (commodity?: string) => (commodity === 'angoor' ? [REPORTS[0], ANGOOR_REPORTS, ...REPORTS.slice(1)]
+export const reportGroups = (commodity?: string) => withoutOnHold(commodity === 'angoor' ? [REPORTS[0], ANGOOR_REPORTS, ...REPORTS.slice(1)]
   : isCheeku(commodity) ? [REPORTS[0], CHEEKU_REPORTS, ...REPORTS.slice(1)] : commodity === 'nariyal' ? withNariyalDispatch(REPORTS) : REPORTS)
 
 /** Nariyal: Dispatch (parchi wapas, as the app's Hisab > Dispatch) right below Munafa, then Bhada and the Supplier ledger. */
@@ -257,7 +267,7 @@ export default function App() {
 
   // An owner's home is their shop; an admin's is every shop.
   useEffect(() => {
-    if (route.page === 'home' && me && shops) location.replace(me.admin ? '#/admin' : shopId ? href({ page: 'report', shopId, report: me.partnerShopIds?.includes(shopId) ? 'bank' : 'dashboard' }) : '#/shops')
+    if (route.page === 'home' && me && shops) location.replace(me.admin ? '#/admin' : shopId ? href({ page: 'report', shopId, report: me.partnerShopIds?.includes(shopId) && !ON_HOLD.has('bank') ? 'bank' : 'dashboard' }) : '#/shops')
     // The admin console is MandiPlus's own: a shop owner who follows a link there goes home.
     if (route.page === 'admin' && me && !me.admin) location.replace('#/')
   }, [route.page, me, shops, shopId])

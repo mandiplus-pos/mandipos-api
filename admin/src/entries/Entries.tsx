@@ -4,7 +4,7 @@ import { api } from '../api'
 import { rupees, count } from '../format'
 import { t } from '../i18n'
 import { booksChanged } from '../useLoad'
-import { BuyerPicker, Chips, Field, isWalkInName, Money, Seg, Sheet, Tick, type PickedBuyer } from './fields'
+import { BuyerPicker, Chips, Field, isWalkInName, Money, payForBuyer, Seg, Sheet, Tick, usePayMode, type Pay, type PickedBuyer } from './fields'
 import type { EditBill, EditGaadi, EditRaseed, EntryKind, Editing, VoiceDraft } from './kinds'
 import { AngoorGaadiForm, AngoorParchiForm, type AngoorOptions } from './Angoor'
 import { CnSheet, JvSheet } from '../pages/Vouchers'
@@ -91,7 +91,6 @@ const perKatta = (size: KattaSize) => Number(size.slice(5))
 const PANNI_NAMES = ['Nariyal Pani', 'Jai Ho', 'AB', 'Organic', 'DFC'] as const
 /** Loose mazdoori and the rickshaw fare: paise per dana to start (₹0.30), as the app. */
 const PER_DANA = 30
-type Pay = 'cash' | 'upi' | 'credit' | 'split' | 'after' | 'free'
 
 /** What this browser remembers between parchis: the accountant's name and the mazdoori rate. */
 const remembered = (key: string, fallback: string) => { try { return localStorage.getItem(key) ?? fallback } catch { return fallback } }
@@ -144,7 +143,7 @@ function ParchiForm({ shopId, onClose, onDone, editing, draft }: FormProps & { e
   const [buyer, setBuyer] = useState<PickedBuyer | null>(was?.buyer ?? null)
   const [truckId, setTruckId] = useState(editing?.truckId ?? draft?.truckId ?? '')
   const [lines, setLines] = useState<Line[]>(was?.lines ?? [{ grade: '1', qty: 0, ratePaise: 0 }])
-  const [pay, setPay] = useState<Pay>(was?.pay ?? 'cash')
+  const { pay, setPay, followBuyer } = usePayMode(was?.pay ?? null, !!editing || !!draft?.pay)
   const [cash, setCash] = useState(editing && was?.pay === 'split' ? editing.cashPaise : draft?.cashPaise ?? 0)
   const [upi, setUpi] = useState(editing && was?.pay === 'split' ? editing.upiPaise : draft?.upiPaise ?? 0)
   const [bank, setBank] = useState(editing?.upiBank ?? '')
@@ -210,9 +209,7 @@ function ParchiForm({ shopId, onClose, onDone, editing, draft }: FormProps & { e
   }
   const pickBuyer = (b: PickedBuyer | null) => {
     setBuyer(b)
-    if (b?.id === null && b.name === 'Cash') setPay('cash')
-    else if (b?.id === null && b.name === 'Bank') setPay('upi')
-    else if (b?.id && pay === 'cash') setPay('credit')
+    followBuyer(b)
     if (b?.id) { setAddress(b.address ?? ''); setStand(b.destination ?? '') }
   }
 
@@ -225,6 +222,7 @@ function ParchiForm({ shopId, onClose, onDone, editing, draft }: FormProps & { e
       onSave={() => {
         if (!truck) return setError(t('Koi khuli gaadi nahi'))
         if (!qty) return setError(t('Nag daalein'))
+        if (!pay) return setError(t('Pehle payment mode chunein'))
         if (!free && walkIn && (pay === 'credit' || pay === 'after' || (pay === 'split' && cash + upi < total))) return setError(t('Udhaar ke liye grahak chunein'))
         if (delivery && !address.trim() && !stand.trim()) return setError(t('Delivery ka pata daalein'))
         remember('mp.labourRate', String(rate)); remember('mp.staff', staff.trim())
@@ -414,7 +412,7 @@ function fromDraft(d: Draft<'parchi'>) {
   return {
     buyer: d.buyer as PickedBuyer | null,
     lines: d.lines.length ? d.lines : [{ grade: '1' as const, qty: 0, ratePaise: 0 }],
-    pay: (d.pay ?? 'cash') as Pay, packing, panni: d.panni,
+    pay: (d.pay ?? payForBuyer(d.buyer as PickedBuyer | null)) as Pay | null, packing, panni: d.panni,
     size: (d.size ?? 'katta10') as KattaSize, kattaName: d.kattaName, parchune: d.parchune,
     // Tied goods carry mazdoori as a matter of course, as when the packing is tapped.
     labour: d.labour || packing !== 'loose', labourQty: '', rate: null, rikshaw: false, rikshawRate: PER_DANA, rikshawSaved: 0, rikshawDana: 0, looseRate: PER_DANA,

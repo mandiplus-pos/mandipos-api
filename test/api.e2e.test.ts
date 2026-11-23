@@ -5317,3 +5317,107 @@ describe('bank statement and reconciliation (partner)', () => {
     await http().post(`${base}/collections/${col}/void`).set(pw).send({}).expect(403);
   });
 });
+
+describe('website matches the app (part payment, late refund)', () => {
+  const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const lateNote = (slipNo: number, d: string) => `Parchi #${slipNo} refund (${d.slice(8, 10)} ${months[Number(d.slice(5, 7)) - 1]} ki)`;
+
+  async function shopWithWeb(phone: string, name: string) {
+    const res = await registerShop(phone, name);
+    await http().post('/v1/admin/auth/otp').send({ phone }).expect(204);
+    const web = auth((await http().post('/v1/admin/auth/verify').send({ phone, code: OtpService.issuedForTests.get(phone) }).expect(200)).body.token);
+    const term = auth(res.accessToken);
+    const push = async (items: object[]) => {
+      const r = (await http().post('/v1/sync/push').set(term).send({ items }).expect(200)).body.results as any[];
+      expect(r.map((x) => x.status)).toEqual(items.map(() => 'applied'));
+    };
+    return { base: `/v1/admin/shops/${res.me.shop.id}`, web, push };
+  }
+
+  it('shows a part-paid slip as Parchi / mila / baaki in Outstanding, without touching the cash book', async () => {
+    const t = now();
+    const d = istDay();
+    const { base, web, push } = await shopWithWeb('9877911001', 'Part Pay');
+    const raju = uuidv7(), billId = uuidv7();
+    await push([
+      { table: 'buyers', row: { id: raju, created_at: t, updated_at: t, name: 'Raju', phone: '9877911091', kind: '', credit_limit_paise: 0, vehicle: '', address: '', destination: '' } },
+      // ₹30,000 parchi, ₹15,000 paid at the counter in cash.
+      { table: 'bills', row: { id: billId, created_at: t, number: 'P1/2627/000001', kind: 'kachchi', buyer_id: raju, buyer_name: 'Raju', business_date: d,
+        pay_mode: 'cash', total_paise: 3000000, paid_paise: 1500000, cash_paise: 1500000, slip_no: 1 } },
+    ]);
+    const row = async () => (await http().get(`${base}/outstanding`).set(web).expect(200)).body.rows.find((r: any) => r.buyerId === raju);
+    let r = await row();
+    expect(r).toMatchObject({ duePaise: 1500000, billedPaise: 3000000, receivedPaise: 1500000 });
+    expect(r.slips).toEqual([{ billId, slipNo: 1, date: d, totalPaise: 3000000, paidAtCounterPaise: 1500000, collectedOnSlipPaise: 0, receivedPaise: 1500000, openPaise: 1500000 }]);
+    // ₹5,000 vasooli on that slip: 20,000 in, 10,000 left.
+    await push([{ table: 'collections', row: { id: uuidv7(), created_at: t, buyer_id: raju, amount_paise: 500000, pay_mode: 'cash', payment_ref: '',
+      business_date: d, bill_id: billId, receipt_no: 1, cash_paise: 500000, upi_paise: 0 } }]);
+    r = await row();
+    expect(r).toMatchObject({ duePaise: 1000000, billedPaise: 3000000, receivedPaise: 2000000 });
+    expect(r.slips[0]).toMatchObject({ totalPaise: 3000000, paidAtCounterPaise: 1500000, collectedOnSlipPaise: 500000, receivedPaise: 2000000, openPaise: 1000000 });
+    // Money without a slip settles it too (oldest first).
+    await push([{ table: 'collections', row: { id: uuidv7(), created_at: t, buyer_id: raju, amount_paise: 100000, pay_mode: 'upi', payment_ref: '',
+      business_date: d, bill_id: null, receipt_no: 2, cash_paise: 0, upi_paise: 100000 } }]);
+    expect((await row()).slips[0]).toMatchObject({ receivedPaise: 2100000, openPaise: 900000 });
+    // The galla counts the counter cash as sale and the vasooli as vasooli, once each.
+    const galla = (await http().get(`${base}/cashbook?pot=galla&from=${d}&to=${d}`).set(web).expect(200)).body;
+    expect(galla.lines.map((l: any) => [l.kind, l.inPaise])).toEqual([['bikri', 1500000], ['vasooli', 500000]]);
+    expect(galla.inPaise).toBe(2000000);
+  });
+
+  it('keeps a parchi refunded after its day in that day, and shows the refund going out today', async () => {
+    const t = now();
+    const d = istDay();
+    const yesterday = new Date(Date.parse(d) - 86_400_000).toISOString().slice(0, 10);
+    const { base, web, push } = await shopWithWeb('9877911002', 'Late Refund');
+    const raju = uuidv7(), appBill = uuidv7(), webBill = uuidv7(), col = uuidv7();
+    await push([
+      { table: 'buyers', row: { id: raju, created_at: t, updated_at: t, name: 'Raju', phone: '9877911092', kind: '', credit_limit_paise: 0, vehicle: '', address: '', destination: '' } },
+      // Yesterday: #1 ₹1,000 (₹600 cash + ₹200 UPI, ₹200 udhaar later paid in cash), and #2 ₹500 cash.
+      { table: 'bills', row: { id: appBill, created_at: t, number: 'L1/2627/000001', kind: 'kachchi', buyer_id: raju, buyer_name: 'Raju', business_date: yesterday,
+        pay_mode: 'mixed', total_paise: 100000, paid_paise: 80000, cash_paise: 60000, upi_paise: 20000, slip_no: 1 } },
+      { table: 'collections', row: { id: col, created_at: t, buyer_id: raju, amount_paise: 20000, pay_mode: 'cash', payment_ref: '',
+        business_date: yesterday, bill_id: appBill, receipt_no: 1, cash_paise: 20000, upi_paise: 0 } },
+      { table: 'bills', row: { id: webBill, created_at: t, number: 'L1/2627/000002', kind: 'kachchi', buyer_name: 'Cash', business_date: yesterday,
+        pay_mode: 'cash', total_paise: 50000, paid_paise: 50000, cash_paise: 50000, slip_no: 2 } },
+    ]);
+    const book = async (pot: string, day: string) => (await http().get(`${base}/cashbook?pot=${pot}&from=${day}&to=${day}`).set(web).expect(200)).body;
+    const dash = async (day: string) => (await http().get(`${base}/dashboard?from=${day}&to=${day}`).set(web).expect(200)).body.now;
+    const before = { galla: await book('galla', yesterday), bank: await book('bank', yesterday), dash: await dash(yesterday) };
+    expect(before.dash).toMatchObject({ salesPaise: 150000, slips: 2, cashPaise: 110000, upiPaise: 20000 });
+
+    // #1 refunded today on the app: its raseed cancelled, cash and UPI out of today by the late-refund lines, then the void.
+    const v = new Date().toISOString();
+    await push([
+      { table: 'collection_voids', row: { id: uuidv7(), created_at: v, collection_id: col, receipt_no: 1, reason: 'deleted' } },
+      { table: 'daybook_entries', row: { id: uuidv7(), created_at: v, updated_at: v, direction: 'out', mode: 'cash', category: 'aur_gaya', party_name: 'Raju',
+        note: lateNote(1, yesterday), amount_paise: 80000, business_date: d } },
+      { table: 'daybook_entries', row: { id: uuidv7(), created_at: v, updated_at: v, direction: 'out', mode: 'upi', category: 'aur_gaya', party_name: 'Raju',
+        note: lateNote(1, yesterday), amount_paise: 20000, business_date: d } },
+      { table: 'bill_voids', row: { id: uuidv7(), created_at: v, bill_id: appBill, slip_no: 1, reason: 'refunded' } },
+    ]);
+    // #2 refunded today on the website: the portal books its own late-refund line.
+    expect((await http().post(`${base}/bills/${webBill}/void`).set(web).send({ reason: 'refunded' }).expect(200)).body).toMatchObject({ late: true, refundPaise: 50000 });
+
+    // Yesterday is as it was: the sale, the counter money, the vasooli on #1.
+    expect(await dash(yesterday)).toMatchObject({ salesPaise: 150000, slips: 2, cashPaise: 110000, upiPaise: 20000, udhaarPaise: 0 });
+    for (const pot of ['galla', 'bank'] as const) {
+      const after = await book(pot, yesterday);
+      expect(after.lines.map((l: any) => [l.kind, l.inPaise, l.outPaise])).toEqual(before[pot].lines.map((l: any) => [l.kind, l.inPaise, l.outPaise]));
+      expect(after.closingPaise).toBe(before[pot].closingPaise);
+    }
+    const dayBook = (await http().get(`${base}/daybook?from=${yesterday}&to=${yesterday}`).set(web).expect(200)).body.entries as any[];
+    expect(dayBook.filter((e) => e.kind === 'slip').map((e) => [e.title, e.voided, e.lateRefund, e.udhaarPaise]).sort())
+      .toEqual([['Parchi 1', null, true, 0], ['Parchi 2', null, true, 0]]);
+    expect(dayBook.find((e) => e.kind === 'payment')).toMatchObject({ amountPaise: 20000, voided: null });
+    // Today: the money goes out by the refund lines (cash from the galla, UPI from the bank).
+    const galla = await book('galla', d), bank = await book('bank', d);
+    expect(galla.lines.map((l: any) => [l.kind, l.note, l.outPaise]).sort()).toEqual([['out', lateNote(1, yesterday), 80000], ['out', lateNote(2, yesterday), 50000]]);
+    expect(bank.lines.map((l: any) => [l.kind, l.note, l.outPaise])).toEqual([['out', lateNote(1, yesterday), 20000]]);
+    expect(galla.openingPaise).toBe(before.galla.closingPaise);
+    // Nothing is owed on a refunded slip.
+    expect((await http().get(`${base}/outstanding`).set(web).expect(200)).body.rows.find((r: any) => r.buyerId === raju)).toBeUndefined();
+
+  });
+});

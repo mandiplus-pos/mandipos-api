@@ -153,6 +153,8 @@ export type DayEntry = {
   title: string; party: string; buyerId: string | null; nags: number
   amountPaise: number; cashPaise: number; upiPaise: number; udhaarPaise: number
   payMode: string; staff: string; voided: string | null; note?: string; mode?: string
+  /** A slip refunded after its day: it still counts here, and the money went out on the refund's day. */
+  lateRefund?: boolean
 }
 
 export type Me = { phone: string; admin: boolean; shopIds: string[] | null; labourShopIds?: string[]; partnerShopIds?: string[] }
@@ -176,8 +178,12 @@ export type CashBook = {
 }
 export type Outstanding = {
   totals: Buckets & { duePaise: number; count: number }
-  rows: (Buckets & { buyerId: string; name: string; phone: string; code: string; duePaise: number; oldestDays: number | null; lastSlipOn: string | null; lastPaidAt: string | null })[]
+  rows: (Buckets & { buyerId: string; name: string; phone: string; code: string; duePaise: number; oldestDays: number | null; lastSlipOn: string | null; lastPaidAt: string | null
+    /** What the open dues came to, and what has come off them (at the counter, vasooli): display only. */
+    billedPaise: number; receivedPaise: number; slips: OpenSlip[] })[]
 }
+/** A slip still open: Parchi [totalPaise] · mila [receivedPaise] · baaki [openPaise] (the app's Collections). */
+export type OpenSlip = { billId: string; slipNo: number | null; date: string; totalPaise: number; paidAtCounterPaise: number; collectedOnSlipPaise: number; receivedPaise: number; openPaise: number }
 export type Suppliers = {
   totals: Buckets & { duePaise: number; count: number }
   rows: (Buckets & { key: string; name: string; gaadis: number; openGaadis: number; openingPaise: number; purchasePaise: number; paidPaise: number; duePaise: number; lastAt: string | null })[]

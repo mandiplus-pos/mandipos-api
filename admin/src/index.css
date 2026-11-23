@@ -675,6 +675,7 @@ b, .b { font-weight: 700; }
 .tbl th + th { border-left: 1px solid var(--line-2); }
 .tbl td { padding: 3px 8px; border-bottom: 0; font-size: 12px; }
 .tbl td small { display: inline; margin-left: 6px; font-size: 11px; }
+.tbl td small.split { display: block; margin-left: 0; color: var(--accent); font-weight: 650; }
 .tbl td.main-col b, .tbl td .name { font-weight: 700; }
 .tbl th.num, .tbl td.num { padding-left: 18px; }
 .tbl tbody tr[data-row]:hover { background: #e7eedc; }

@@ -123,6 +123,7 @@ export function EntryTable({ shopId, entries, multiDay, compact }: { shopId: str
                     <small>
                       <span className="show-sm">{time(e.at)} · {v.type}{v.no ? ` ${v.no}` : ''}{e.voided || v.detail ? ' · ' : ''}</span>
                       {e.voided ? <span className="due">{e.voided === 'edited' ? t('Badli') : t('Hatayi')}</span> : v.detail}
+                      {e.lateRefund && <span className="due"> · {t('Refund baad mein hua')}</span>}
                     </small>
                   </td>
                   {!compact && <td className="num opt-col muted">{e.nags ? count(e.nags) : ''}</td>}

@@ -45,6 +45,7 @@ export const ENTRIES: Record<string, readonly [string, string]> = {
   'Koi khuli gaadi nahi — pehle Nayi Gaadi jodein': ['No open truck — add a New Truck first', 'कोई खुली गाड़ी नहीं — पहले नई गाड़ी जोड़ें'],
   'Nag daalein': ['Enter pcs', 'नग डालें'],
   'Udhaar ke liye grahak chunein': ['Pick a customer for credit', 'उधार के लिए ग्राहक चुनें'],
+  'Pehle payment mode chunein': ['Pick the payment mode first', 'पहले पेमेंट मोड चुनें'],
   'Delivery ka pata daalein': ['Enter delivery address', 'डिलीवरी का पता डालें'],
   'Parchi #{n} save hui': ['Slip #{n} saved', 'पर्ची #{n} सेव हुई'],
   'Parchi #{n} save hui · machine par chhapegi': ['Slip #{n} saved · printing on the machine', 'पर्ची #{n} सेव हुई · मशीन पर छपेगी'],

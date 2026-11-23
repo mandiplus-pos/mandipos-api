@@ -1,5 +1,8 @@
 /** Report pages: Dashboard, Day Book, Cash Book, Outstanding, ledgers, stock, admin pages. */
 export const REPORTS: Record<string, readonly [string, string]> = {
+  'Refund baad mein hua': ['Refunded on a later day', 'रिफंड बाद में हुआ'],
+  'Parchi {total} · mila {got} · baaki {left}': ['Slip {total} · received {got} · due {left}', 'पर्ची {total} · मिला {got} · बाकी {left}'],
+  '{n} khuli parchi': ['{n} open slips', '{n} खुली पर्ची'],
   // Periods
   'Aaj': ['Today', 'आज'],
   'aaj': ['today', 'आज'],

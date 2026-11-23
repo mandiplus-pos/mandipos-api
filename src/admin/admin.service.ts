@@ -9,7 +9,7 @@ import { Db, Tx } from '../db/db.service';
  *  - a grahak's baaki is their unpaid slips plus udhaar entries minus everything they paid.
  */
 
-import { BALANCES, CASH_PART, IST_DAY, LIVE_BILLS, LIVE_COLS, MOBILE, OPENING_NOTES, UPI_PART, day, n } from './sql';
+import { BALANCES, CASH_PART, DAY_BILLS, DAY_COLS, IST_DAY, LATE_REFUNDED, LIVE_BILLS, LIVE_COLS, MOBILE, OPENING_NOTES, UPI_PART, day, n } from './sql';
 
 type KhataRow = { id: string; at: string; date: string; kind: 'slip' | 'payment' | 'udhaar'; title: string; detail: string; nags: number; debitPaise: number; creditPaise: number; lines?: { brand: string; grade: string; qty: number; ratePaise: number; leak: boolean }[]; charges?: { label: string; paise: number } };
 
@@ -112,9 +112,9 @@ export class AdminService {
 
       const sales = await one(
         `SELECT COUNT(*) AS slips, COALESCE(SUM(total_paise - rikshaw_paise),0) AS sales, COALESCE(SUM(cash_paise),0) AS cash, COALESCE(SUM(upi_paise),0) AS upi
-         FROM ${LIVE_BILLS} lb WHERE business_date BETWEEN $1 AND $2`);
+         FROM ${DAY_BILLS} lb WHERE business_date BETWEEN $1 AND $2`);
       const nags = await one(
-        `SELECT COALESCE(SUM(l.qty),0) AS nags FROM bill_lines l JOIN ${LIVE_BILLS} lb ON lb.id = l.bill_id
+        `SELECT COALESCE(SUM(l.qty),0) AS nags FROM bill_lines l JOIN ${DAY_BILLS} lb ON lb.id = l.bill_id
          WHERE lb.business_date BETWEEN $1 AND $2`);
       // Left unpaid on the period's slips, net of vasooli taken against them on any day since.
       const credit = await one(
@@ -123,7 +123,7 @@ export class AdminService {
          FROM ${LIVE_BILLS} lb WHERE lb.business_date BETWEEN $1 AND $2 AND lb.total_paise > lb.paid_paise`);
       const col = await one(
         `SELECT COUNT(*) AS n, COALESCE(SUM(${CASH_PART}),0) AS cash, COALESCE(SUM(${UPI_PART}),0) AS upi
-         FROM ${LIVE_COLS} lc WHERE business_date BETWEEN $1 AND $2`);
+         FROM ${DAY_COLS} lc WHERE business_date BETWEEN $1 AND $2`);
       const labour = await one(
         `SELECT (SELECT COALESCE(SUM(labour_paise),0) FROM ${LIVE_BILLS} lb WHERE business_date BETWEEN $1 AND $2 AND labour_paise > 0)
               + (SELECT COALESCE(SUM(amount_paise),0) FROM labour_adjustments WHERE hidden = false AND business_date BETWEEN $1 AND $2) AS paise`);
@@ -154,7 +154,7 @@ export class AdminService {
       const series = (await tx.query<{ d: string; sales: string; slips: string }>(
         `SELECT d::date::text AS d, COALESCE(SUM(lb.total_paise - lb.rikshaw_paise),0) AS sales, COUNT(lb.id) AS slips
          FROM generate_series($1::date, $2::date, interval '1 day') d
-         LEFT JOIN ${LIVE_BILLS} lb ON lb.business_date = d::date
+         LEFT JOIN ${DAY_BILLS} lb ON lb.business_date = d::date
          GROUP BY d ORDER BY d`, [from, to])).rows;
       const topBuyers = (await tx.query<{ id: string; name: string; sales: string; slips: string }>(
         `SELECT lb.buyer_id AS id, MAX(lb.buyer_name) AS name, SUM(lb.total_paise - lb.rikshaw_paise) AS sales, COUNT(*) AS slips
@@ -520,16 +520,18 @@ export class AdminService {
     if (from > to) throw new BadRequestException('from must be on or before to');
     await this.requireApproved(shopId);
     return this.db.withShop(shopId, async (tx) => {
-      const slips = (await tx.query<{ id: string; at: Date; day: string; slip_no: number | null; number: string; buyer_id: string | null; buyer_name: string; pay_mode: string; total: string; paid: string; cash: string; upi: string; nags: string; void_reason: string | null; staff: string }>(
+      const slips = (await tx.query<{ id: string; at: Date; day: string; slip_no: number | null; number: string; buyer_id: string | null; buyer_name: string; pay_mode: string; total: string; paid: string; cash: string; upi: string; nags: string; void_reason: string | null; staff: string; late: boolean }>(
         `SELECT b.id, b.created_at AS at, b.business_date::text AS day, b.slip_no, b.number, b.buyer_id, b.buyer_name, b.pay_mode,
                 b.total_paise AS total, b.paid_paise AS paid, b.cash_paise AS cash, b.upi_paise AS upi, b.staff_name AS staff,
                 (SELECT COALESCE(SUM(qty), 0) FROM bill_lines l WHERE l.bill_id = b.id) AS nags,
-                (SELECT v.reason FROM bill_voids v WHERE v.bill_id = b.id LIMIT 1) AS void_reason
+                (SELECT v.reason FROM bill_voids v WHERE v.bill_id = b.id LIMIT 1) AS void_reason,
+                b.id IN ${LATE_REFUNDED} AS late
          FROM bills b WHERE b.business_date BETWEEN $1 AND $2 ORDER BY b.created_at DESC LIMIT 1000`, [from, to])).rows;
-      const pays = (await tx.query<{ id: string; at: Date; day: string; buyer_id: string; name: string | null; amount: string; cash: string; upi: string; receipt_no: number | null; voided: string | null }>(
+      const pays = (await tx.query<{ id: string; at: Date; day: string; buyer_id: string; name: string | null; amount: string; cash: string; upi: string; receipt_no: number | null; voided: string | null; counted: boolean }>(
         `SELECT c.id, c.created_at AS at, c.business_date::text AS day, c.buyer_id, g.name, c.amount_paise AS amount,
                 ${CASH_PART} AS cash, ${UPI_PART} AS upi,
-                c.receipt_no, (SELECT v.reason FROM collection_voids v WHERE v.collection_id = c.id LIMIT 1) AS voided
+                c.receipt_no, (SELECT v.reason FROM collection_voids v WHERE v.collection_id = c.id LIMIT 1) AS voided,
+                EXISTS (SELECT 1 FROM ${DAY_COLS} dc WHERE dc.id = c.id) AS counted
          FROM collections c LEFT JOIN buyers g ON g.id = c.buyer_id
          WHERE c.business_date BETWEEN $1 AND $2 ORDER BY c.created_at DESC LIMIT 1000`, [from, to])).rows;
       const book = (await tx.query<{ id: string; at: Date; day: string; direction: string; mode: string; category: string; party: string; note: string; amount: string }>(
@@ -541,14 +543,15 @@ export class AdminService {
         ...slips.map((b) => ({
           kind: 'slip' as const, id: b.id, at: b.at.toISOString(), date: b.day,
           title: `Parchi ${b.slip_no ?? b.number}`, party: b.buyer_name, buyerId: b.buyer_id, nags: n(b.nags),
-          amountPaise: n(b.total), cashPaise: n(b.cash), upiPaise: n(b.upi), udhaarPaise: Math.max(0, n(b.total) - n(b.paid)),
-          payMode: b.pay_mode, staff: b.staff, voided: b.void_reason,
+          // Refunded after its day: still the day's sale (the money left on the refund's day), owing nothing.
+          amountPaise: n(b.total), cashPaise: n(b.cash), upiPaise: n(b.upi), udhaarPaise: b.late ? 0 : Math.max(0, n(b.total) - n(b.paid)),
+          payMode: b.pay_mode, staff: b.staff, voided: b.late ? null : b.void_reason, lateRefund: b.late,
         })),
         ...pays.map((c) => ({
           kind: 'payment' as const, id: c.id, at: c.at.toISOString(), date: c.day,
           title: c.receipt_no ? `Raseed ${c.receipt_no}` : 'Vasooli', party: c.name ?? '', buyerId: c.buyer_id, nags: 0,
           amountPaise: n(c.amount), cashPaise: n(c.cash), upiPaise: n(c.upi), udhaarPaise: 0,
-          payMode: '', staff: '', voided: c.voided,
+          payMode: '', staff: '', voided: c.counted ? null : c.voided,
         })),
         ...book.map((e) => ({
           kind: (e.direction === 'in' ? 'in' : 'out') as 'in' | 'out', id: e.id, at: e.at.toISOString(), date: e.day,

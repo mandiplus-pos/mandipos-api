@@ -3,6 +3,29 @@ import type { Tx } from '../db/db.service';
 
 export const LIVE_BILLS = `(SELECT * FROM bills b WHERE NOT EXISTS (SELECT 1 FROM bill_voids v WHERE v.bill_id = b.id))`;
 export const LIVE_COLS = `(SELECT * FROM collections c WHERE NOT EXISTS (SELECT 1 FROM collection_voids v WHERE v.collection_id = c.id))`;
+/**
+ * Slips refunded after their day (the app's Store.lateRefunds): a 'refunded' void that a today-dated
+ * "Parchi #N refund (DD MMM ki)" out line stands for (the app's refundBill and the portal's voidBill
+ * both write it). Keyed on that line, as the app is: a hidden line leaves the slip gone from its day.
+ */
+export const LATE_REFUNDED = `(SELECT rv.bill_id FROM bill_voids rv JOIN bills rb ON rb.id = rv.bill_id WHERE rv.reason = 'refunded'
+  AND EXISTS (SELECT 1 FROM daybook_entries rd WHERE rd.hidden = false AND rd.category = 'aur_gaya'
+              AND rd.note LIKE 'Parchi #' || COALESCE(rv.slip_no, rb.slip_no) || ' refund (% ki)'))`;
+/**
+ * The slips a day's figures count (sale, counter cash / UPI, dana): the live ones, and those
+ * refunded after their day, which keep counting there while the money leaves on the refund's day.
+ * Nothing is owed on a refunded one, so udhaar and dues still read LIVE_BILLS.
+ */
+export const DAY_BILLS = `(SELECT * FROM bills b WHERE NOT EXISTS (SELECT 1 FROM bill_voids v WHERE v.bill_id = b.id) OR b.id IN ${LATE_REFUNDED})`;
+/**
+ * The raseeds a day's vasooli counts: the live ones, and those cancelled along with a slip
+ * refunded after its day (the app keeps them in that slip's void snapshot). "Along with" is
+ * the refund's own moment: both voids are written together, within the minute.
+ */
+export const DAY_COLS = `(SELECT * FROM collections c WHERE NOT EXISTS (SELECT 1 FROM collection_voids v WHERE v.collection_id = c.id)
+  OR EXISTS (SELECT 1 FROM collection_voids cv JOIN bill_voids bv ON bv.bill_id = c.bill_id AND bv.reason = 'refunded'
+             WHERE cv.collection_id = c.id AND bv.bill_id IN ${LATE_REFUNDED}
+               AND cv.created_at BETWEEN bv.created_at - interval '1 minute' AND bv.created_at + interval '1 minute'))`;
 export const CASH_PART = `CASE WHEN cash_paise + upi_paise > 0 THEN cash_paise WHEN pay_mode = 'cash' THEN amount_paise ELSE 0 END`;
 export const UPI_PART = `CASE WHEN cash_paise + upi_paise > 0 THEN upi_paise WHEN pay_mode IN ('upi', 'card') THEN amount_paise ELSE 0 END`;
 /** Per grahak: what they owe (positive) or the shop holds for them (negative). */
