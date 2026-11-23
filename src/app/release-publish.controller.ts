@@ -7,13 +7,19 @@ import { readApk } from './apk';
 
 /** The release key every POS update is signed with: a build signed any other way can't update the machines. */
 const RELEASE_CERT = '163e9678060ab2f2a12e20f02db0072fd30c7686906735eacf11df2efff4da36';
+/**
+ * Mandi Plus 2's key (mandiplus-pos2.jks): the counter app under com.mandiplus.pos, made because
+ * RELEASE_CERT's key is not at hand. Only builds signed with it can update Mandi Plus 2.
+ */
+const POS2_CERT = '207ae0a3572bb3bdb4b9820a773c0989e3153c158c76248f17c9c0946dbbee39';
 /** The flavors that can be published this way, and the app each must be. */
 const APPS = {
   pos: { packageName: 'com.mandiplus.pos.uat', cert: RELEASE_CERT },
   daybook: { packageName: 'com.mandiplus.daybook', cert: RELEASE_CERT },
+  pos2: { packageName: 'com.mandiplus.pos', cert: POS2_CERT },
 } as const;
 
-const Flavor = z.enum(['pos', 'daybook']);
+const Flavor = z.enum(['pos', 'daybook', 'pos2']);
 const Notes = z.object({ notes: z.string().max(500).default('') });
 
 /**

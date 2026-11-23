@@ -4772,6 +4772,66 @@ describe('release publish', () => {
     await owner(`UPDATE release_publishers SET revoked_at = now() WHERE name = 'tester'`);
     await http().post('/v1/releases/pos').set('X-Release-Token', TOKEN).set('Content-Type', APK).send(apk).expect(403);
   });
+
+  describe('Mandi Plus 2 (pos2)', () => {
+    // Its own channel: com.mandiplus.pos signed with its own key, never mixed with the old app's builds.
+    const POS2_TOKEN = 'mpr_e2e-token-e2e-token-e2e-token-e2e-token-pos2';
+    const POS_ONLY = 'mpr_e2e-token-e2e-token-e2e-token-e2e-token-posx';
+    const fixture2 = process.env.APK_FIXTURE_POS2; // a Mandi Plus 2 release build (assemblePos2Release)
+    const debug2 = process.env.APK_FIXTURE_POS2_DEBUG; // the same app with the debug key (assemblePos2Debug)
+    const oldApp = process.env.APK_FIXTURE_OLD_APP ?? fixture; // any com.mandiplus.pos.uat build
+    const binary = (res: any, cb: any) => { const parts: Buffer[] = []; res.on('data', (c: Buffer) => parts.push(c)); res.on('end', () => cb(null, Buffer.concat(parts))); };
+
+    beforeAll(async () => {
+      // A new token can publish pos2 by default; one limited to the old app cannot.
+      await owner(`INSERT INTO release_publishers (name, token_sha256) VALUES ('tester2', sha256(convert_to('${POS2_TOKEN}', 'UTF8')))`);
+      await owner(`INSERT INTO release_publishers (name, token_sha256, flavors) VALUES ('posonly', sha256(convert_to('${POS_ONLY}', 'UTF8')), '{pos}')`);
+    });
+
+    it('takes a pos2 upload only with a token allowed pos2, and reads the file before anything else', async () => {
+      await http().post('/v1/releases/pos2').set('X-Release-Token', POS_ONLY).set('Content-Type', APK).send(Buffer.alloc(5000)).expect(403);
+      const junk = await http().post('/v1/releases/pos2').set('X-Release-Token', POS2_TOKEN).set('Content-Type', APK).send(Buffer.alloc(5000)).expect(400);
+      expect(junk.body.message).toMatch(/Not an APK/);
+    });
+
+    it('serves the newest pos2 build to Mandi Plus 2 and on the download page, apart from pos', async () => {
+      const s = await login('9811100291');
+      const auth = { Authorization: `Bearer ${s.accessToken}` };
+      const before = (await http().get('/v1/app/latest?flavor=pos').set(auth).expect(200)).body.release;
+      expect((await http().get('/v1/app/latest?flavor=pos2').set(auth).expect(200)).body).toEqual({ release: null });
+      await owner(`INSERT INTO app_releases (flavor, version_code, version_name, sha256, size_bytes, apk) VALUES
+        ('pos2', 7, '0.83.0', '${'3'.repeat(64)}', 3, '\\x000102')`);
+      const latest = await http().get('/v1/app/latest?flavor=pos2').set(auth).expect(200);
+      expect(latest.body.release).toMatchObject({ versionCode: 7, versionName: '0.83.0', sizeBytes: 3 });
+      expect((await http().get('/v1/app/latest?flavor=pos').set(auth).expect(200)).body.release).toEqual(before);
+      const got = await http().get('/v1/app/apk?flavor=pos2&versionCode=7').set(auth).buffer(true).parse(binary).expect(200);
+      expect((got.body as Buffer).length).toBe(3);
+      expect((await http().get('/v1/public/app').expect(200)).body.pos2).toMatchObject({ versionCode: 7 });
+      const dl = await http().get('/v1/public/app/download?flavor=pos2').buffer(true).parse(binary).expect(200);
+      expect(dl.headers['content-disposition']).toBe('attachment; filename="MandiPlus2-0.83.0.apk"');
+      await owner(`DELETE FROM app_releases WHERE flavor = 'pos2'`);
+    });
+
+    (oldApp ? it : it.skip)('refuses the old app (com.mandiplus.pos.uat) on the pos2 channel', async () => {
+      const apk = (await import('node:fs')).readFileSync(oldApp!);
+      const r = await http().post('/v1/releases/pos2').set('X-Release-Token', POS2_TOKEN).set('Content-Type', APK).send(apk).expect(400);
+      expect(r.body.message).toMatch(/not the pos2 app \(com\.mandiplus\.pos\)/);
+    });
+
+    (debug2 ? it : it.skip)('refuses Mandi Plus 2 signed with any key but its own', async () => {
+      const apk = (await import('node:fs')).readFileSync(debug2!);
+      const r = await http().post('/v1/releases/pos2').set('X-Release-Token', POS2_TOKEN).set('Content-Type', APK).send(apk).expect(400);
+      expect(r.body.message).toMatch(/Not signed with the release key/);
+    });
+
+    (fixture2 ? it : it.skip)('publishes a Mandi Plus 2 release on pos2 only, never on the old app\'s channel', async () => {
+      const apk = (await import('node:fs')).readFileSync(fixture2!);
+      await http().post('/v1/releases/pos').set('X-Release-Token', POS2_TOKEN).set('Content-Type', APK).send(apk).expect(400);
+      const r = await http().post('/v1/releases/pos2?notes=e2e').set('X-Release-Token', POS2_TOKEN).set('Content-Type', APK).send(apk).expect(201);
+      expect(r.body).toMatchObject({ published: true, flavor: 'pos2', by: 'tester2' });
+      await http().post('/v1/releases/pos2').set('X-Release-Token', POS2_TOKEN).set('Content-Type', APK).send(apk).expect(409);
+    });
+  });
 });
 
 describe('mark order', () => {

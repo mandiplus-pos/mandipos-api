@@ -5,7 +5,7 @@ import { AuthGuard } from '../auth/auth.guard';
 import { parse } from '../common/validate';
 import { Db } from '../db/db.service';
 
-const FLAVORS = ['pos', 'daybook', 'tally', 'admin', 'desktop', 'desktop-new'] as const;
+const FLAVORS = ['pos', 'daybook', 'tally', 'admin', 'desktop', 'desktop-new', 'pos2'] as const;
 type Flavor = (typeof FLAVORS)[number];
 
 const LatestQuery = z.object({ flavor: z.enum(FLAVORS) });
@@ -25,6 +25,8 @@ const FILES: Record<Flavor, { name: (v: string) => string; type: string }> = {
   desktop: { name: (v) => `MandiPlus-Dashboard-${v}.exe`, type: 'application/vnd.microsoft.portable-executable' },
   // The same app on the new-look beta portal.
   'desktop-new': { name: (v) => `MandiPlus-Dashboard-New-${v}.exe`, type: 'application/vnd.microsoft.portable-executable' },
+  // Mandi Plus 2: the counter app under com.mandiplus.pos with its own signing key.
+  pos2: { name: (v) => `MandiPlus2-${v}.apk`, type: 'application/vnd.android.package-archive' },
 };
 
 /** Published APKs, read the same way by the terminals updating themselves and by the download page. */
