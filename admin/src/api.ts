@@ -97,7 +97,7 @@ export type Shop = {
 
 export type Device = { code: string | null; label: string; web: boolean; appVersion: string; phone: string; name: string; lastSeenAt: string | null; addedAt: string }
 export type ShopDetail = Omit<Shop, 'devices'> & {
-  team: { name: string; phone: string; role: 'admin' | 'accountant'; joinedAt: string }[]
+  team: { name: string; phone: string; role: 'admin' | 'accountant' | 'partner'; joinedAt: string }[]
   devices: Device[]
 }
 
@@ -155,7 +155,7 @@ export type DayEntry = {
   payMode: string; staff: string; voided: string | null; note?: string; mode?: string
 }
 
-export type Me = { phone: string; admin: boolean; shopIds: string[] | null; labourShopIds?: string[] }
+export type Me = { phone: string; admin: boolean; shopIds: string[] | null; labourShopIds?: string[]; partnerShopIds?: string[] }
 export type Buckets = { d0_7: number; d8_30: number; d31: number }
 export type Dashboard = {
   from: string; to: string

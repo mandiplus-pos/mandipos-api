@@ -41,18 +41,31 @@ const TTL_SECONDS = 12 * 60 * 60;
  * sees only the approved shops they own. Read on every request, so taking someone off a shop or
  * off the admin list locks them out at once — the token only says which phone signed in.
  */
-export type Viewer = { phone: string; admin: boolean; shopIds: string[]; labourShopIds: string[] };
+export type Viewer = { phone: string; admin: boolean; shopIds: string[]; labourShopIds: string[]; partnerShopIds: string[] };
 type PortalRequest = Request & { viewer?: Viewer };
 
 async function viewerFor(db: Db, phoneNo: string): Promise<Viewer | null> {
-  if (adminPhones().includes(phoneNo)) return { phone: phoneNo, admin: true, shopIds: [], labourShopIds: [] };
+  if (adminPhones().includes(phoneNo)) return { phone: phoneNo, admin: true, shopIds: [], labourShopIds: [], partnerShopIds: [] };
   const rows = await db.query<{ id: string; role: string }>(
     `SELECT s.id, m.role FROM shop_members m JOIN users u ON u.id = m.user_id JOIN shops s ON s.id = m.shop_id
-     WHERE u.phone = $1 AND m.role IN ('owner', 'labour') AND s.approved_at IS NOT NULL ORDER BY s.created_at`, [phoneNo]);
+     WHERE u.phone = $1 AND m.role IN ('owner', 'labour', 'partner') AND s.approved_at IS NOT NULL ORDER BY s.created_at`, [phoneNo]);
   return rows.length
-    ? { phone: phoneNo, admin: false, shopIds: rows.map((r) => r.id), labourShopIds: rows.filter((r) => r.role === 'labour').map((r) => r.id) }
+    ? {
+      phone: phoneNo, admin: false, shopIds: rows.map((r) => r.id), labourShopIds: rows.filter((r) => r.role === 'labour').map((r) => r.id),
+      partnerShopIds: rows.filter((r) => r.role === 'partner').map((r) => r.id),
+    }
     : null;
 }
+
+/**
+ * A partner login (migration 090) reads every page (any GET) and may write only here: the bank
+ * statement upload, its matching and the account openings (bank.controller.ts), plus the two
+ * read-only POSTs that fetch documents. No entry, edit, delete, setting or team change.
+ */
+const PARTNER_HANDLERS = new Set([
+  'bankSetOpening', 'bankCsvPreview', 'bankCsvImport', 'bankAddLines', 'bankVoidLine', 'bankVoidBatch', 'bankMatch', 'bankUnmatch',
+  'invoiceDocs', 'khatas',
+]);
 
 /** All a labour login may do on the website, as in the app: scan slips, hand boxes over, report broken ones. */
 const LABOUR_HANDLERS = new Set(['me', 'shops', 'pickupSlip', 'pickup', 'reportBreakage', 'labourHome']);
@@ -77,6 +90,10 @@ export class AdminGuard implements CanActivate {
     const shopId = (req.params as Record<string, string> | undefined)?.id;
     const labour = !viewer.admin && (shopId ? viewer.labourShopIds.includes(shopId) : viewer.labourShopIds.length === viewer.shopIds.length);
     if (labour && !LABOUR_HANDLERS.has(ctx.getHandler().name)) throw new ForbiddenException('Labour login sirf scan kar sakta hai');
+    const partner = !viewer.admin && (shopId ? viewer.partnerShopIds.includes(shopId) : viewer.partnerShopIds.length === viewer.shopIds.length);
+    if (partner && req.method !== 'GET' && !PARTNER_HANDLERS.has(ctx.getHandler().name)) {
+      throw new ForbiddenException('Partner login sirf dekh sakta hai aur bank statement chadha sakta hai');
+    }
     req.viewer = viewer;
     return true;
   }
@@ -90,7 +107,7 @@ const Range = z.object({ from: Day, to: Day });
 const Code = z.object({ phone, code: z.string().regex(/^\d{4,8}$/, 'must be the OTP digits') });
 const CustomerKey = z.union([z.string().regex(/^[6-9]\d{9}$/), z.string().regex(/^[0-9a-f-]{36}~[0-9a-f-]{36}$/)]);
 const RejectBody = z.object({ reason: z.string().trim().max(200).default('') });
-const ConsoleRole = z.enum(['admin', 'accountant', 'labour']);
+const ConsoleRole = z.enum(['admin', 'accountant', 'labour', 'partner']);
 const Person = z.object({ phone, name: z.string().trim().max(80).default(''), role: ConsoleRole });
 const NewShopBody = z.object({
   name: z.string().trim().min(1, 'Dukaan ka naam daalein').max(120), nickname: z.string().trim().max(60).default(''),
@@ -840,7 +857,7 @@ export class AdminController {
   /** Who is signed in, and which shops they may open. */
   @Get('me')
   me(@See() v: Viewer) {
-    return { phone: v.phone, admin: v.admin, shopIds: v.admin ? null : v.shopIds, labourShopIds: v.labourShopIds };
+    return { phone: v.phone, admin: v.admin, shopIds: v.admin ? null : v.shopIds, labourShopIds: v.labourShopIds, partnerShopIds: v.partnerShopIds };
   }
 
   /** Admin: every shop, requests first. Owner: their own shops. */
@@ -912,7 +929,7 @@ export class AdminController {
   @HttpCode(200)
   setBranchTeam(@See() v: Viewer, @Param('id') id: string, @Body() body: unknown) {
     const b = parse(BranchTeamBody, body);
-    const owned = new Set(v.shopIds.filter((s) => !v.labourShopIds.includes(s)));
+    const owned = new Set(v.shopIds.filter((s) => !v.labourShopIds.includes(s) && !v.partnerShopIds.includes(s)));
     return this.adminConsole.setBranches(mine(v, id), b.phone, b.name, b.roles, (s) => v.admin || owned.has(s));
   }
 

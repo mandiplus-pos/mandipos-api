@@ -159,6 +159,8 @@ export class SyncService {
     if (!def) return { id: rawId, status: 'rejected', error: `unknown table ${item?.table}` };
     // A labour login only hands boxes over and reports broken ones.
     if (!LABOUR_TABLES.has(item.table) && (await roleOf()) === 'labour') return { id: rawId, status: 'rejected', error: 'labour can only record pickups, breakages and parchi scans' };
+    // A partner reads the books on the website and writes nothing to them (migration 090).
+    if ((await roleOf()) === 'partner') return { id: rawId, status: 'rejected', error: 'a partner login cannot write entries' };
     const parsed = def.row.safeParse(item.row);
     if (!parsed.success) {
       const i = parsed.error.issues[0];

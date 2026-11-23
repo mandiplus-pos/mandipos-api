@@ -21,6 +21,7 @@ import { AllShops } from './pages/AllShops'
 import { Market, Person } from './pages/Market'
 import { Requests } from './pages/Requests'
 import { Deposits } from './pages/Deposits'
+import { Bank } from './pages/Bank'
 import { Machines } from './pages/Machines'
 import { Console } from './pages/Console'
 import { PrintMachinePick } from './PrintPick'
@@ -68,6 +69,7 @@ export const REPORTS: { group: string; items: { report: Report; label: string; k
     { report: 'daybook', label: t('Day Book'), key: 'D', icon: I.IBook },
     { report: 'cashbook', label: t('Cash / Bank Book'), key: 'C', icon: I.ICash },
     { report: 'bankjama', label: t('Bank Jama Parchi'), key: '', icon: I.IWallet },
+    { report: 'bank', label: t('Bank khata & milan'), key: '', icon: I.ICash },
     { report: 'register', label: t('Bikri Register'), key: 'R', icon: I.ILedger },
     { report: 'munafa', label: t('Munafa (P&L)'), key: 'M', icon: I.IRupee },
   ] },
@@ -146,6 +148,14 @@ export const reportGroups = (commodity?: string) => (commodity === 'angoor' ? [R
 
 const LAST_SHOP = 'mandipos-shop'
 
+/** What a partner login sees (migration 090): the books to read and the bank page; no entry, settings or masters. */
+const PARTNER_REPORTS = new Set<Report>([
+  'dashboard', 'daybook', 'cashbook', 'bank', 'register', 'munafa', 'outstanding', 'ledger', 'vasooli', 'suppliers',
+  'stock', 'gaadis', 'items', 'team', 'gl', 'tb', 'multi', 'chithi', 'big', 'salepurchase', 'purcha',
+])
+const partnerGroups = (groups: typeof REPORTS) => groups
+  .map((g) => ({ ...g, items: g.items.filter((it) => PARTNER_REPORTS.has(it.report)) })).filter((g) => g.items.length > 0)
+
 /**
  * One owner's branches side by side at the top of every page (DEVIC FRUIT CO. Delhi | Jaipur):
  * a tap shows the same report for the other branch. An owner's own shops; for a MandiPlus admin,
@@ -214,6 +224,7 @@ export default function App() {
   const routeShop = route.page === 'report' || route.page === 'grahak' || route.page === 'supplier' ? route.shopId : null
   const remembered = (() => { try { return localStorage.getItem(LAST_SHOP) } catch { return null } })()
   const shopId = routeShop ?? (open.find((s) => s.id === remembered)?.id ?? open[0]?.id ?? null)
+  const partner = !!me && !me.admin && !!shopId && !!me.partnerShopIds?.includes(shopId)
   useEffect(() => { if (routeShop) try { localStorage.setItem(LAST_SHOP, routeShop) } catch { /* private mode */ } }, [routeShop])
 
   // A home-screen shortcut (manifest "shortcuts") opens /?go=…: go to that screen once, then drop it.
@@ -232,7 +243,7 @@ export default function App() {
 
   // An owner's home is their shop; an admin's is every shop.
   useEffect(() => {
-    if (route.page === 'home' && me && shops) location.replace(me.admin ? '#/admin' : shopId ? href({ page: 'report', shopId, report: 'dashboard' }) : '#/shops')
+    if (route.page === 'home' && me && shops) location.replace(me.admin ? '#/admin' : shopId ? href({ page: 'report', shopId, report: me.partnerShopIds?.includes(shopId) ? 'bank' : 'dashboard' }) : '#/shops')
     // The admin console is MandiPlus's own: a shop owner who follows a link there goes home.
     if (route.page === 'admin' && me && !me.admin) location.replace('#/')
   }, [route.page, me, shops, shopId])
@@ -256,7 +267,7 @@ export default function App() {
         e.preventDefault(); setGoto(true); return
       }
       if (goto || document.querySelector('.scrim, .export-root')) return
-      if (F_KEYS[e.key] && shopId) { e.preventDefault(); openEntry(F_KEYS[e.key]); return }
+      if (F_KEYS[e.key] && shopId && !partner) { e.preventDefault(); openEntry(F_KEYS[e.key]); return }
       // Tally's Export (E) and Print (Ctrl+P) both open the preview first.
       if ((e.ctrlKey || e.metaKey) && e.key === 'p' && exportBuilder()) { e.preventDefault(); openExport(); return }
       if (e.key === 'F2') { e.preventDefault(); periodKey('open'); return }
@@ -270,7 +281,7 @@ export default function App() {
       }
       if (!mod && e.key === '?') { e.preventDefault(); openHelp(); return }
       const letter = e.altKey && e.code.startsWith('Key') ? e.code.slice(3).toLowerCase() : !mod ? e.key.toLowerCase() : ''
-      if (letter === 'n' && shopId) { e.preventDefault(); openEntry(); return }
+      if (letter === 'n' && shopId && !partner) { e.preventDefault(); openEntry(); return }
       if (letter === 'e' && exportBuilder()) { e.preventDefault(); openExport(); return }
       if (letter && REPORT_KEYS[letter] && shopId) { e.preventDefault(); go(REPORT_KEYS[letter]); return }
       if (!mod && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && document.querySelector('.stepper')) {
@@ -290,7 +301,7 @@ export default function App() {
     }
     addEventListener('keydown', onKey)
     return () => removeEventListener('keydown', onKey)
-  }, [goto, shopId, drawer, route])
+  }, [goto, shopId, drawer, route, partner])
 
   // The row you opened is remembered per page; coming back (Esc) puts you on it again.
   useEffect(() => {
@@ -357,7 +368,7 @@ export default function App() {
             </div>
           )}
           <nav className="nav">
-            {shopId && reportGroups(shop?.commodity).map((g) => (
+            {shopId && (partner ? partnerGroups(reportGroups(shop?.commodity)) : reportGroups(shop?.commodity)).map((g) => (
               <div key={g.group || 'home'}>
                 {g.group && <div className="grp">{g.group}</div>}
                 {g.items.map((it) => (
@@ -382,12 +393,12 @@ export default function App() {
           </nav>
           <div className="side-ft">
             <button type="button" className="hide-sm" onClick={openHelp}><I.IKeys /><span>{t('Shortcuts')}</span><kbd>?</kbd></button>
-            {shopId && (
+            {shopId && !partner && (
               <a href={href({ page: 'report', shopId, report: 'settings' })} aria-current={current === 'settings' ? 'page' : undefined}>
                 <I.ISettings /><span>{t('Settings')}</span>
               </a>
             )}
-            {!inApp() && <a href={APP_DOWNLOAD} className="hide-lg"><span>📱 {t('App download')}</span></a>}
+            {!inApp() && <a href={APP_DOWNLOAD} className="hide-lg"><span>{t('App download')}</span></a>}
             <UpdateButton />
             <button type="button" onClick={signOut}><I.ILogout /><span>{t('Logout')}</span><small className="inline">{me ? phone(me.phone) : ''}</small></button>
           </div>
@@ -406,13 +417,13 @@ export default function App() {
           {canExport && <button className="export-btn" title={`${t('Export')} (E)`} aria-label={t('Export')} onClick={openExport}><I.IExport /><span>{t('Export')}</span></button>}
           {shopId && shop?.commodity === 'angoor' && <button className="export-btn scan-btn" onClick={() => openScan(shopId)} aria-label={t('Scan')}><I.IScan /><span>{t('Scan')}</span></button>}
           {shopId && isCheeku(shop?.commodity) && <button className="export-btn scan-btn" onClick={() => openCheekuScan(shopId)} aria-label={t('Scan')}><I.IScan /><span>{t('Scan')}</span></button>}
-          {shopId && <button className="new-btn top-new" onClick={() => openEntry()}>+ {t('Nayi entry')}</button>}
+          {shopId && !partner && <button className="new-btn top-new" onClick={() => openEntry()}>+ {t('Nayi entry')}</button>}
           <button className="goto" onClick={() => setGoto(true)} aria-label={t('Go To')}>
             <I.ISearch /><span className="label">{t('Dhoondhein')}…</span>
           </button>
         </header>
 
-        {shopId && <KeyPanel canExport={canExport} onGoto={() => setGoto(true)} onSettings={() => { location.hash = href({ page: 'report', shopId, report: 'settings' }) }} />}
+        {shopId && !partner && <KeyPanel canExport={canExport} onGoto={() => setGoto(true)} onSettings={() => { location.hash = href({ page: 'report', shopId, report: 'settings' }) }} />}
 
         <main className={`main${current === 'bolo' ? ' main-bolo' : ''}`}>
           {routeShop && <BranchBar shopId={routeShop} shops={open} admin={!!me?.admin} report={route.page === 'report' ? route.report : 'dashboard'} />}
@@ -433,19 +444,19 @@ export default function App() {
           <nav className="tabs" aria-label={t('Main')}>
             <a href={href({ page: 'report', shopId, report: 'dashboard' })} aria-current={current === 'dashboard' ? 'page' : undefined}><I.IHome />{t('Home')}</a>
             <a href={href({ page: 'report', shopId, report: 'daybook' }) + periodQuery()} aria-current={current === 'daybook' ? 'page' : undefined}><I.IBook />{t('Day Book')}</a>
-            <button className="plus" aria-label={t('Nayi entry')} onClick={() => openEntry()}><span>+</span></button>
+            {!partner && <button className="plus" aria-label={t('Nayi entry')} onClick={() => openEntry()}><span>+</span></button>}
             <a href={href({ page: 'report', shopId, report: 'outstanding' })} aria-current={current === 'outstanding' || route.page === 'grahak' ? 'page' : undefined}><I.IUdhaar />{t('Udhaar')}</a>
             <button onClick={() => setDrawer(true)}><I.IMenu />{t('Menu')}{pending > 0 && <span className="badge">{pending}</span>}</button>
           </nav>
         )}
 
         {goto && <GoTo shopId={shopId} onClose={() => setGoto(false)} />}
-        {shopId && <NewEntry key={`entry-${shopId}`} shopId={shopId} />}
+        {shopId && !partner && <NewEntry key={`entry-${shopId}`} shopId={shopId} />}
         <VoucherHost />
         <WhatsAppHost />
         <ScanHost />
         <CheekuScanHost />
-        {shopId && <BoloDock key={`bolo-${shopId}`} shopId={shopId} screen={title} onBoloPage={current === 'bolo'} />}
+        {shopId && !partner && <BoloDock key={`bolo-${shopId}`} shopId={shopId} screen={title} onBoloPage={current === 'bolo'} />}
         <ExportHost shopId={shopId} fallback={shop ?? null} />
         <Help />
       </div>
@@ -459,8 +470,8 @@ const NO_CHEEKU_TOOLS = new Set<Report>([
   // Cheeku desk: Dispatch, Gaadi kahan, Beejak, Supplier creditors, Laddan, APMC, Mazdoori (and the grapes keys they mirror).
   'cheeku-dispatch', 'cheeku-pata', 'cheeku-beejak', 'cheeku-creditors', 'cheeku-laddan', 'cheeku-apmc', 'cheeku-mazdoori',
   'dispatch', 'pata', 'beejak', 'creditors', 'laddan', 'apmc', 'mazdoori',
-  // Cash / Bank Book, Bank Jama Parchi, Journal Voucher, Credit Note, Generate Invoices, Aaj ka Bhav, Store Entry, Nigrani.
-  'cashbook', 'bankjama', 'jv', 'cn', 'invoices', 'bhav', 'coldstore', 'nigrani',
+  // Cash / Bank Book, Bank Jama Parchi, Bank khata & milan, Journal Voucher, Credit Note, Generate Invoices, Aaj ka Bhav, Store Entry, Nigrani.
+  'cashbook', 'bankjama', 'bank', 'jv', 'cn', 'invoices', 'bhav', 'coldstore', 'nigrani',
   // General Ledger, Trial Balance, Ledger Multiple, Chithi / Schedule, Bade len-den.
   'gl', 'tb', 'multi', 'chithi', 'big',
   // Masters: Product Master, Product Group, Area Master, Ledger Master, Store Master, Opening balance.
@@ -472,6 +483,7 @@ function ReportPage({ shopId, report }: { shopId: string; report: Report }) {
   switch (report) {
     case 'daybook': return <DayBook key={shopId} shopId={shopId} />
     case 'bankjama': return <Deposits key={shopId} shopId={shopId} />
+    case 'bank': return <Bank key={shopId} shopId={shopId} />
     case 'cashbook': return <CashBook key={shopId} shopId={shopId} />
     case 'outstanding': return <Outstanding key={shopId} shopId={shopId} />
     case 'ledger': return <GrahakList key={shopId} shopId={shopId} />
