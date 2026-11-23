@@ -133,7 +133,7 @@ export function CheekuParchiForm({ shopId, o, editing, draft, onClose, onDone }:
         const filled = lines.filter((l) => l.qty > 0 && lot(l.key))
         if (!filled.length) return setError(t('Quality aur box daalein'))
         if (!pay) return setError(t('Pehle payment mode chunein'))
-        const noUdhaar = udhaarBuyerError(buyer, !free && (credit || (pay === 'split' && cash + upi < total)))
+        const noUdhaar = udhaarBuyerError(buyer, !free && (credit || (pay === 'split' && cash + upi < total)), pay === 'split' ? total - cash - upi : undefined)
         if (noUdhaar) return setError(noUdhaar)
         if (delivery && !address.trim() && !stand.trim()) return setError(t('Delivery ka pata daalein'))
         if (isNew && newPhone && !/^[6-9]\d{9}$/.test(newPhone)) return setError(t('Mobile number 10 ank ka hona chahiye'))

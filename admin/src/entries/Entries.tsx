@@ -222,7 +222,7 @@ function ParchiForm({ shopId, onClose, onDone, editing, draft }: FormProps & { e
         if (!truck) return setError(t('Koi khuli gaadi nahi'))
         if (!qty) return setError(t('Nag daalein'))
         if (!pay) return setError(t('Pehle payment mode chunein'))
-        const noUdhaar = udhaarBuyerError(buyer, !free && (pay === 'credit' || pay === 'after' || (pay === 'split' && cash + upi < total)))
+        const noUdhaar = udhaarBuyerError(buyer, !free && (pay === 'credit' || pay === 'after' || (pay === 'split' && cash + upi < total)), pay === 'split' ? total - cash - upi : undefined)
         if (noUdhaar) return setError(noUdhaar)
         if (delivery && !address.trim() && !stand.trim()) return setError(t('Delivery ka pata daalein'))
         remember('mp.labourRate', String(rate)); remember('mp.staff', staff.trim())

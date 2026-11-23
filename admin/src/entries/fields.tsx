@@ -107,9 +107,11 @@ export const WALK_IN_UDHAAR = 'Udhaar sirf grahak ke naam par: naam likhein ya p
  * Why a parchi that leaves udhaar can't be saved, or null when it can: udhaar needs a grahak,
  * and the walk-in Cash or Bank is nobody's khata (Free is exempt; it has no money on it).
  */
-export function udhaarBuyerError(buyer: PickedBuyer | null, leavesUdhaar: boolean): string | null {
+export function udhaarBuyerError(buyer: PickedBuyer | null, leavesUdhaar: boolean, shortPaise?: number): string | null {
   if (!leavesUdhaar) return null
   if (!buyer || !buyer.name.trim()) return t('Udhaar ke liye grahak chunein')
+  // A walk-in part-paid in round rupees (Rs 3,830 for Rs 3,830.40) is paid, not udhaar: same slack as the API.
+  if (isWalkInName(buyer.name) && shortPaise !== undefined && shortPaise < 100) return null
   if (isWalkInName(buyer.name)) return t(WALK_IN_UDHAAR)
   return null
 }

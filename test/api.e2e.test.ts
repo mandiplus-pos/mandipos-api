@@ -5547,6 +5547,11 @@ describe('walk-in udhaar', () => {
     await slip({ buyerName: 'Bank', pay: 'upi' }).expect(201);
     await slip({ buyerName: 'Free', pay: 'free' }).expect(201);
     await slip({ buyerId: raju, pay: 'credit' }).expect(201);
+    // Round rupees taken at the counter: short by less than Re 1 is paid, not udhaar (live books hold
+    // such slips); short by Re 1 or more is refused.
+    const roundOff = (await slip({ buyerName: 'Cash', pay: 'split', cashPaise: 9960, upiPaise: 0 }).expect(201)).body;
+    expect(roundOff.billId).toBeTruthy();
+    expect((await slip({ buyerName: 'Cash', pay: 'split', cashPaise: 9900, upiPaise: 0 }).expect(422)).body.message).toBe(msg);
     // An edit can't turn a walk-in's paid slip into udhaar either; naming a grahak can.
     expect((await http().post(`${base}/bills/${paid.billId}/edit`).set(web)
       .send({ buyerName: 'Cash', truckId, lines: [{ grade: '1', qty: 4, ratePaise: 2500 }], packing: 'loose', pay: 'credit' }).expect(422)).body.message).toBe(msg);

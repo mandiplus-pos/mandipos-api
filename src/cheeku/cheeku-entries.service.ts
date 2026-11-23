@@ -8,7 +8,7 @@ import { PushItem } from '../sync/sync.service';
 import { LIVE_BILLS, STORE_BACK, n } from '../admin/sql';
 import { nameKey } from '../admin/reports.service';
 import {
-  EntriesService, WALK_IN_NAME, WALK_IN_UDHAAR, billMoney, nextNumber, payModeCode, todayIst,
+  EntriesService, WALK_IN_NAME, WALK_IN_UDHAAR, walkInLeavesUdhaar, billMoney, nextNumber, payModeCode, todayIst,
   type GaadiInput, type LiveBill, type ParchiInput,
 } from '../admin/entries.service';
 import { CHEEKU_CAPS_NAMES, requireCheeku, requireCheekuTx } from './cheeku';
@@ -115,7 +115,7 @@ export class CheekuEntriesService {
     else if (input.pay === 'upi') upi = total;
     else if (input.pay === 'split') { cash = input.cashPaise ?? 0; upi = input.upiPaise ?? 0; }
     if (cash + upi > total) throw new BadRequestException('Jama rakam parchi se zyada hai');
-    if (!free && cash + upi < total && WALK_IN_NAME.test(buyerName)) throw new UnprocessableEntityException(WALK_IN_UDHAAR);
+    if (!free && walkInLeavesUdhaar(buyerName, total, cash + upi)) throw new UnprocessableEntityException(WALK_IN_UDHAAR);
     if (!buyerId && cash + upi < total && !free) throw new BadRequestException('Udhaar ke liye grahak chunein');
     const chosen = free ? 'free' : input.pay === 'split' ? null : input.pay;
     const payMode = chosen && (total === 0 || chosen === 'after') ? chosen : payModeCode(cash, upi);

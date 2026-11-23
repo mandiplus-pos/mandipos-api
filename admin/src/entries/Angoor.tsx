@@ -124,7 +124,7 @@ export function AngoorParchiForm({ shopId, o, editing, draft, onClose, onDone }:
         const filled = lines.filter((l) => l.qty > 0 && lot(l.key))
         if (!filled.length) return setError(t('Quality aur box daalein'))
         if (!pay) return setError(t('Pehle payment mode chunein'))
-        const noUdhaar = udhaarBuyerError(buyer, !free && (credit || (pay === 'split' && cash + upi < total)))
+        const noUdhaar = udhaarBuyerError(buyer, !free && (credit || (pay === 'split' && cash + upi < total)), pay === 'split' ? total - cash - upi : undefined)
         if (noUdhaar) return setError(noUdhaar)
         if (delivery && !address.trim() && !stand.trim()) return setError(t('Delivery ka pata daalein'))
         remember('mp.angoorLabourRate', String(rate)); remember('mp.staff', staff.trim())

@@ -38,6 +38,14 @@ function fy(): string {
 export const WALK_IN_NAME = /^\s*(cash|bank)\s*$/i;
 /** A parchi left on udhaar for the walk-in Cash or Bank is refused, as the app's parchi screen refuses it. */
 export const WALK_IN_UDHAAR = 'Udhaar sirf grahak ke naam par: naam likhein ya poora paisa lein';
+/**
+ * What a walk-in Cash / Bank parchi may be left short by without counting as udhaar: the paise a
+ * counter drops when it takes round rupees (Rs 3,830 for Rs 3,830.40). Live books hold such slips.
+ */
+export const WALK_IN_SLACK_PAISE = 100;
+/** True when a walk-in slip is short by more than the round-off slack, i.e. would leave real udhaar on nobody. */
+export const walkInLeavesUdhaar = (buyerName: string, billPaise: number, paidPaise: number) =>
+  WALK_IN_NAME.test(buyerName) && billPaise - paidPaise >= WALK_IN_SLACK_PAISE;
 export const payModeCode = (cash: number, upi: number) => (cash > 0 && upi > 0 ? 'mixed' : upi > 0 ? 'upi' : cash > 0 ? 'cash' : 'credit');
 
 export type Grade = '1' | '2' | '3' | 'mix';
@@ -276,8 +284,10 @@ export class EntriesService {
     else if (input.pay === 'upi') upi = goods;
     else if (input.pay === 'split') { cash = input.cashPaise ?? 0; upi = input.upiPaise ?? 0; }
     if (cash + upi > goods) throw new BadRequestException('Jama rakam parchi se zyada hai');
-    if (!free && cash + upi < goods && WALK_IN_NAME.test(buyerName)) throw new UnprocessableEntityException(WALK_IN_UDHAAR);
-    if (!buyerId && cash + upi < goods && !free) throw new BadRequestException('Udhaar ke liye grahak chunein');
+    if (!free && walkInLeavesUdhaar(buyerName, goods, cash + upi)) throw new UnprocessableEntityException(WALK_IN_UDHAAR);
+    // A walk-in short by only the round-off paise is a paid slip, not udhaar.
+    if (!buyerId && cash + upi < goods && !free && !(WALK_IN_NAME.test(buyerName) && goods - cash - upi < WALK_IN_SLACK_PAISE))
+      throw new BadRequestException('Udhaar ke liye grahak chunein');
     const chosen = free ? 'free' : input.pay === 'split' ? null : input.pay;
     const payMode = chosen && (goods === 0 || chosen === 'after') ? chosen : payModeCode(cash, upi);
     const packed = input.packing !== 'loose';
@@ -388,7 +398,7 @@ export class EntriesService {
     else if (input.pay === 'upi') upi = total;
     else if (input.pay === 'split') { cash = input.cashPaise ?? 0; upi = input.upiPaise ?? 0; }
     if (cash + upi > total) throw new BadRequestException('Jama rakam parchi se zyada hai');
-    if (!free && cash + upi < total && WALK_IN_NAME.test(buyerName)) throw new UnprocessableEntityException(WALK_IN_UDHAAR);
+    if (!free && walkInLeavesUdhaar(buyerName, total, cash + upi)) throw new UnprocessableEntityException(WALK_IN_UDHAAR);
     if (!buyerId && cash + upi < total && !free) throw new BadRequestException('Udhaar ke liye grahak chunein');
     const chosen = free ? 'free' : input.pay === 'split' ? null : input.pay;
     const payMode = chosen && (total === 0 || chosen === 'after') ? chosen : payModeCode(cash, upi);
