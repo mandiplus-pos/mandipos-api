@@ -37,6 +37,8 @@ export function DayBook({ shopId }: { shopId: string }) {
   const pick = (f: Filter) => { setFilter(f); setHashQuery({ ...Object.fromEntries(hashQuery()), f }) }
   const live = (data ?? []).filter((e) => !e.voided)
   const sum = (pred: (e: DayEntry) => boolean) => live.filter(pred).reduce((t, e) => t + e.amountPaise, 0)
+  // The parchis by how they were paid: cash and UPI at the counter, and what each wrote on udhaar.
+  const slipPart = (k: 'cashPaise' | 'upiPaise' | 'udhaarPaise') => live.filter((e) => e.kind === 'slip').reduce((t, e) => t + e[k], 0)
   const shown = (data ?? []).filter((e) => filter === 'sab' || (filter === 'bikri' && e.kind === 'slip') || (filter === 'vasooli' && e.kind === 'payment') || (filter === 'kharcha' && (e.kind === 'in' || e.kind === 'out')))
 
   useExport(data ? () => {
@@ -50,7 +52,8 @@ export function DayBook({ shopId }: { shopId: string }) {
     }
     return {
       style: 'book' as const, title: t('Day Book'), dateLine: dayRange(period.from, period.to), file: fileName(t('Day Book'), period.from, period.to),
-      summary: [[t('Parchi'), rs(sum((e) => e.kind === 'slip'))], [t('Vasooli'), rs(sum((e) => e.kind === 'payment'))], [t('Kharcha'), rs(sum((e) => e.kind === 'out' && !NOT_KHARCHA.has(e.title)))]],
+      summary: [[t('Parchi'), rs(sum((e) => e.kind === 'slip'))], [t('Cash bikri'), rs(slipPart('cashPaise'))], [t('UPI bikri'), rs(slipPart('upiPaise'))],
+        [t('Udhaar bikri'), rs(slipPart('udhaarPaise'))], [t('Vasooli'), rs(sum((e) => e.kind === 'payment'))], [t('Kharcha'), rs(sum((e) => e.kind === 'out' && !NOT_KHARCHA.has(e.title)))]],
       columns: [{ label: t('Samay') }, { label: t('Type') }, { label: t('No.') }, { label: t('Naam'), wide: true }, { label: t('Nag'), num: true }, { label: t('Rakam'), num: true }, { label: t('Payment') }],
       rows,
     }
@@ -69,6 +72,9 @@ export function DayBook({ shopId }: { shopId: string }) {
         <div className={`stack${loading ? ' dim' : ''}`}>
           <div className="card sum">
             <div><span className="lb">{t('Parchi')}</span><span className="v">{rupees(sum((e) => e.kind === 'slip'))}</span></div>
+            <div><span className="lb">{t('Cash bikri')}</span><span className="v">{rupees(slipPart('cashPaise'))}</span></div>
+            <div><span className="lb">{t('UPI bikri')}</span><span className="v">{rupees(slipPart('upiPaise'))}</span></div>
+            <div><span className="lb">{t('Udhaar bikri')}</span><span className="v due">{rupees(slipPart('udhaarPaise'))}</span></div>
             <div><span className="lb">{t('Vasooli')}</span><span className="v jama">{rupees(sum((e) => e.kind === 'payment'))}</span></div>
             <div><span className="lb">{t('Kharcha')}</span><span className="v">{rupees(sum((e) => e.kind === 'out' && !NOT_KHARCHA.has(e.title)))}</span></div>
             {sum((e) => e.kind === 'in' && !NOT_KHARCHA.has(e.title)) > 0 && <div><span className="lb">{t('Aaya')}</span><span className="v">{rupees(sum((e) => e.kind === 'in' && !NOT_KHARCHA.has(e.title)))}</span></div>}

@@ -157,10 +157,12 @@ export type DayEntry = {
 
 export type Me = { phone: string; admin: boolean; shopIds: string[] | null; labourShopIds?: string[] }
 export type Buckets = { d0_7: number; d8_30: number; d31: number }
+export type DashTotals = { salesPaise: number; slips: number; cashPaise: number; upiPaise: number; udhaarPaise: number; purchasePaise: number; gaadis: number }
 export type Dashboard = {
   from: string; to: string
-  now: { salesPaise: number; slips: number; purchasePaise: number; gaadis: number }
-  before: { salesPaise: number; slips: number; purchasePaise: number; gaadis: number }
+  /** cash/upi: paid at the counter on the period's slips; udhaar: what those slips wrote on credit (total less paid). */
+  now: DashTotals
+  before: DashTotals
   trend: { date: string; salesPaise: number; purchasePaise: number }[]
   receivables: Buckets & { duePaise: number; count: number }
   payables: Buckets & { duePaise: number; count: number }
