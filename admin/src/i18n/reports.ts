@@ -267,6 +267,8 @@ export const REPORTS: Record<string, readonly [string, string]> = {
   'Kul jama': ['Total advance', 'कुल जमा'],
   'Jama': ['Advance', 'जमा'],
   'Jama se kata': ['Paid from advance', 'जमा से कटा'],
+  'Kisne diya': ['Paid by', 'किसने दिया'],
+  '{pot} se': ['From {pot}', '{pot} से'],
   'Jama se kata {amt}': ['{amt} paid from advance', 'जमा से कटा {amt}'],
   'Grahak ke pehle diye paise (jama) se kata': ["Paid from the customer's earlier money (advance)", 'ग्राहक के पहले दिए पैसे (जमा) से कटा'],
   'Kisi grahak ka jama nahi': ['No customer has an advance', 'किसी ग्राहक का जमा नहीं'],

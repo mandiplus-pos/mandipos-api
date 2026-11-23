@@ -524,6 +524,7 @@ a.kpi:hover { border-color: #cfd3da; }
 .pt td { height: 22px; padding: 0 6px; font: 400 12.8px/22px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 330px; }
 .pt td.num { text-align: right; }
 .pt tr.b td { font-weight: 700; }
+.pt td.b { font-weight: 900; }
 .pt tr.strike td { text-decoration: line-through; color: #9ca3af; }
 .pt tr.band td { height: 26px; font: 800 12px system-ui, sans-serif; letter-spacing: 0.04em; padding-top: 6px; }
 .pt tfoot td { height: 30px; font-weight: 800; border-top: 1px solid var(--pi); border-bottom: 1px solid var(--pi); }
@@ -1333,3 +1334,8 @@ button.link { border: 0; background: none; padding: 0; color: var(--accent); cur
 .print-btn:hover { background: #f1f5f4; }
 .print-btn svg { width: 15px; height: 15px; }
 @media (max-width: 700px) { .print-btn span { display: none; } .print-btn { padding: 0 7px; } }
+
+/* Bada: the PAID stamp on a paid gaadi's sheet (the app's Bada parchi stamps it so). */
+.paid-stamp { display: inline-block; margin-top: 4px; padding: 8px 14px; border: 2.5px solid var(--jama); border-radius: 8px; color: var(--jama); transform: rotate(-2deg); }
+.paid-stamp .ps-word { display: block; font: 900 26px/1.1 system-ui, sans-serif; letter-spacing: 0.16em; }
+.paid-stamp .ps-line { display: block; font-size: 13px; font-weight: 600; margin-top: 2px; }

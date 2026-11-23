@@ -65,9 +65,11 @@ export function NariyalBhada({ shopId }: { shopId: string }) {
       { label: t('Fine'), num: true }, { label: t('Inaam'), num: true }, { label: t('Halting'), num: true }, { label: t('Net'), num: true }, { label: t('Haal'), wide: true }],
     rows: rows.map((r) => ({
       bold: !r.paid,
+      // A paid gaadi says PAID in bold capitals, as the app's stamp does.
+      boldCells: r.paid ? [9] : undefined,
       cells: [dmy(r.arrivedOn), [gaadiName(r), r.supplier].filter((x, i, a) => x && a.indexOf(x) === i).join(' · '), rs(r.bhadaPaise), r.advancePaise ? rs(r.advancePaise) : '',
         r.dalaPaise ? rs(r.dalaPaise) : '', r.finePaise ? rs(r.finePaise) : '', r.inaamPaise ? rs(r.inaamPaise) : '', r.haltingPaise ? rs(r.haltingPaise) : '', rs(r.netPaise),
-        r.paid ? [t('Paid'), r.paidOn ? dmy(r.paidOn) : '', r.paidBy, potName(r.payout?.pot)].filter(Boolean).join(' · ') : t('BAAKI')],
+        r.paid ? ['PAID', r.paidOn ? dmy(r.paidOn) : '', r.paidBy, potName(r.payout?.pot)].filter(Boolean).join(' · ') : t('BAAKI')],
     })),
     foot: [t('Kul'), `${count(rows.length)} ${t('gaadi')}`, rs(tot.bhada), rs(tot.advance), rs(tot.dala), rs(tot.fine), rs(tot.inaam), rs(tot.halting), rs(tot.net), ''],
     note: t('Net = bhada − advance − dala − fine − halting + inaam'),
@@ -140,6 +142,20 @@ export function NariyalBhada({ shopId }: { shopId: string }) {
   )
 }
 
+/** A paid gaadi's stamp: PAID, the day and time, the amount, who paid and from which book. */
+function PaidStamp({ row: r }: { row: BadaRow }) {
+  const paise = r.payout?.amountPaise ?? Math.abs(r.netPaise)
+  return (
+    <div className="paid-stamp" role="status" aria-label={t('Paid')}>
+      <span className="ps-word">PAID</span>
+      <span className="ps-line">{[r.paidOn ? dmy(r.paidOn) : '', r.paidAt ? time(r.paidAt) : ''].filter(Boolean).join(' · ')}</span>
+      <span className="ps-line">{rupees(paise)}</span>
+      {r.paidBy && <span className="ps-line">{t('Kisne diya')}: {r.paidBy}</span>}
+      <span className="ps-line">{r.payout?.pot ? t('{pot} se', { pot: potName(r.payout.pot) }) : r.payout ? '' : t('Aaya-Gaya mein line nahi')}</span>
+    </div>
+  )
+}
+
 /** One gaadi's Bada as the app's Bada parchi has it: the bhada, each head with its sign, the net, and how it was paid. */
 function BadaSheet({ row: r, onClose }: { row: BadaRow; onClose: () => void }) {
   const heads: [string, number, number][] = ([
@@ -162,10 +178,7 @@ function BadaSheet({ row: r, onClose }: { row: BadaRow; onClose: () => void }) {
             <tr><td><b>{r.netPaise < 0 ? t('Gaadi wala dega') : t('Net dena')}</b></td><td className="num money"><b className={r.paid ? 'jama' : 'due'}>{rupees(Math.abs(r.netPaise))}</b></td></tr>
           </tbody></table>
           <div style={{ marginTop: 12 }}>
-            {r.paid
-              ? <><span className="chip green">{t('Paid')}</span> <span className="muted">{[r.paidOn ? shortDate(r.paidOn) : '', r.paidAt ? time(r.paidAt) : '', r.paidBy,
-                  r.payout ? t('{pot} se {amt}', { pot: potName(r.payout.pot), amt: rupees(r.payout.amountPaise) }) : t('Aaya-Gaya mein line nahi')].filter(Boolean).join(' · ')}</span></>
-              : <span className="chip red">{t('Baaki')}</span>}
+            {r.paid ? <PaidStamp row={r} /> : <span className="chip red">{t('Baaki')}</span>}
           </div>
           {r.maal.length > 0 && (
             <>
