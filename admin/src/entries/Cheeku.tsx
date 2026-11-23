@@ -4,7 +4,7 @@ import { api } from '../api'
 import { count, rupees } from '../format'
 import { t } from '../i18n'
 import { booksChanged } from '../useLoad'
-import { BuyerPicker, Field, isWalkInName, Money, payForBuyer, Seg, Sheet, Tick, usePayMode, type PickedBuyer } from './fields'
+import { BuyerPicker, Field, isWalkInName, Money, payForBuyer, Seg, Sheet, Tick, udhaarBuyerError, usePayMode, type PickedBuyer } from './fields'
 import type { EditBill, EditGaadi, VoiceDraft } from './kinds'
 
 /** What the cheeku forms read from entry-options: every quality on every open gaadi, and each supplier's last gaadi. */
@@ -133,7 +133,8 @@ export function CheekuParchiForm({ shopId, o, editing, draft, onClose, onDone }:
         const filled = lines.filter((l) => l.qty > 0 && lot(l.key))
         if (!filled.length) return setError(t('Quality aur box daalein'))
         if (!pay) return setError(t('Pehle payment mode chunein'))
-        if (!free && walkIn && (credit || (pay === 'split' && cash + upi < total))) return setError(t('Udhaar ke liye grahak chunein'))
+        const noUdhaar = udhaarBuyerError(buyer, !free && (credit || (pay === 'split' && cash + upi < total)))
+        if (noUdhaar) return setError(noUdhaar)
         if (delivery && !address.trim() && !stand.trim()) return setError(t('Delivery ka pata daalein'))
         if (isNew && newPhone && !/^[6-9]\d{9}$/.test(newPhone)) return setError(t('Mobile number 10 ank ka hona chahiye'))
         remember('mp.cheekuLabourRate', String(rate)); remember('mp.staff', staff.trim())

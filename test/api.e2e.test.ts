@@ -1569,7 +1569,7 @@ describe('shop approval and the admin portal', () => {
     expect(job).toMatchObject({ billId: slip.billId, image: null, title: 'Order Parchi #2' });
     await http().post(`/v1/print/jobs/${job.id}/done`).set(auth(shop.accessToken)).send({ ok: true }).expect(204);
     // A walk-in can't take udhaar, and no slip sells more than the gaadi has.
-    await http().post(`${base}/entries/parchi`).set(web).send({ truckId, lines: [{ grade: '1', qty: 5, ratePaise: 2500 }], pay: 'credit', packing: 'loose' }).expect(400);
+    await http().post(`${base}/entries/parchi`).set(web).send({ truckId, lines: [{ grade: '1', qty: 5, ratePaise: 2500 }], pay: 'credit', packing: 'loose' }).expect(422);
     await http().post(`${base}/entries/parchi`).set(web).send({ buyerId: raju, truckId, lines: [{ grade: '1', qty: 9999, ratePaise: 1 }], pay: 'cash', packing: 'loose' }).expect(422);
 
     // The shop's terminal pulls the slip like any other: under the website's own device and series.
@@ -5419,5 +5419,41 @@ describe('website matches the app (part payment, late refund)', () => {
     // Nothing is owed on a refunded slip.
     expect((await http().get(`${base}/outstanding`).set(web).expect(200)).body.rows.find((r: any) => r.buyerId === raju)).toBeUndefined();
 
+  });
+});
+
+describe('walk-in udhaar', () => {
+  const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
+  it('refuses a parchi left on udhaar for the walk-in Cash or Bank, on a new slip and an edit; Free and paid slips go', async () => {
+    const shop = await registerShop('9811122201', 'Walk In Traders');
+    const id = shop.me.shop.id as string;
+    const t = new Date().toISOString();
+    const brandId = uuidv7(), truckId = uuidv7(), raju = uuidv7();
+    await http().post('/v1/sync/push').set(auth(shop.accessToken)).send({ items: [
+      { table: 'brands', row: { id: brandId, created_at: t, updated_at: t, name: 'Pollachi' } },
+      { table: 'buyers', row: { id: raju, created_at: t, updated_at: t, name: 'Raju Fruits', phone: '9876500001' } },
+      { table: 'trucks', row: { id: truckId, created_at: t, updated_at: t, number: 'TN09', supplier: 'Mani', arrived_at: t } },
+      { table: 'truck_grades', row: { id: uuidv7(), created_at: t, truck_id: truckId, brand_id: brandId, grade: '1', billed_qty: 500, received_qty: 500, rate_paise: 2000 } },
+    ] }).expect(200);
+    await http().post('/v1/admin/auth/otp').send({ phone: '9811122201' }).expect(204);
+    const web = auth((await http().post('/v1/admin/auth/verify').send({ phone: '9811122201', code: OtpService.issuedForTests.get('9811122201') }).expect(200)).body.token);
+    const base = `/v1/admin/shops/${id}`;
+    const slip = (body: object) => http().post(`${base}/entries/parchi`).set(web).send({ truckId, lines: [{ grade: '1', qty: 4, ratePaise: 2500 }], packing: 'loose', ...body });
+    const msg = 'Udhaar sirf grahak ke naam par: naam likhein ya poora paisa lein';
+
+    // Udhaar, Paise ke baad, and part paid: all refused on Cash and Bank, whatever the case.
+    expect((await slip({ buyerName: 'Cash', pay: 'credit' }).expect(422)).body.message).toBe(msg);
+    expect((await slip({ buyerName: 'bank', pay: 'after' }).expect(422)).body.message).toBe(msg);
+    expect((await slip({ buyerName: 'Bank', pay: 'split', cashPaise: 0, upiPaise: 5000 }).expect(422)).body.message).toBe(msg);
+    // Paid in full, Free, or udhaar on a real grahak: saved.
+    const paid = (await slip({ buyerName: 'Cash', pay: 'split', cashPaise: 6000, upiPaise: 4000 }).expect(201)).body;
+    await slip({ buyerName: 'Bank', pay: 'upi' }).expect(201);
+    await slip({ buyerName: 'Free', pay: 'free' }).expect(201);
+    await slip({ buyerId: raju, pay: 'credit' }).expect(201);
+    // An edit can't turn a walk-in's paid slip into udhaar either; naming a grahak can.
+    expect((await http().post(`${base}/bills/${paid.billId}/edit`).set(web)
+      .send({ buyerName: 'Cash', truckId, lines: [{ grade: '1', qty: 4, ratePaise: 2500 }], packing: 'loose', pay: 'credit' }).expect(422)).body.message).toBe(msg);
+    await http().post(`${base}/bills/${paid.billId}/edit`).set(web)
+      .send({ buyerId: raju, truckId, lines: [{ grade: '1', qty: 4, ratePaise: 2500 }], packing: 'loose', pay: 'credit' }).expect(201);
   });
 });

@@ -4,7 +4,7 @@ import { api } from '../api'
 import { rupees, count } from '../format'
 import { t } from '../i18n'
 import { booksChanged } from '../useLoad'
-import { BuyerPicker, Chips, Field, isWalkInName, Money, payForBuyer, Seg, Sheet, Tick, usePayMode, type Pay, type PickedBuyer } from './fields'
+import { BuyerPicker, Chips, Field, isWalkInName, Money, payForBuyer, Seg, Sheet, Tick, udhaarBuyerError, usePayMode, type Pay, type PickedBuyer } from './fields'
 import type { EditBill, EditGaadi, EditRaseed, EntryKind, Editing, VoiceDraft } from './kinds'
 import { AngoorGaadiForm, AngoorParchiForm, type AngoorOptions } from './Angoor'
 import { CnSheet, JvSheet } from '../pages/Vouchers'
@@ -187,7 +187,6 @@ function ParchiForm({ shopId, onClose, onDone, editing, draft }: FormProps & { e
   const keepFare = !!was && was.rikshawSaved > 0 && qty === was.rikshawDana && rikshawRate === was.rikshawRate
   const rikshawPaise = !free && rikshawOn ? (keepFare ? was!.rikshawSaved : qty * rikshawRate) : 0
   const total = free ? 0 : lines.reduce((s, l) => s + l.qty * l.ratePaise, 0) + rikshawPaise
-  const walkIn = !buyer || (buyer.id === null && isWalkInName(buyer.name))
   const per = perKatta(size)
   const loose = pack === 'loose'
   const labourNag = labour ? (loose ? qty : Number(labourQty) || qty) : 0
@@ -223,7 +222,8 @@ function ParchiForm({ shopId, onClose, onDone, editing, draft }: FormProps & { e
         if (!truck) return setError(t('Koi khuli gaadi nahi'))
         if (!qty) return setError(t('Nag daalein'))
         if (!pay) return setError(t('Pehle payment mode chunein'))
-        if (!free && walkIn && (pay === 'credit' || pay === 'after' || (pay === 'split' && cash + upi < total))) return setError(t('Udhaar ke liye grahak chunein'))
+        const noUdhaar = udhaarBuyerError(buyer, !free && (pay === 'credit' || pay === 'after' || (pay === 'split' && cash + upi < total)))
+        if (noUdhaar) return setError(noUdhaar)
         if (delivery && !address.trim() && !stand.trim()) return setError(t('Delivery ka pata daalein'))
         remember('mp.labourRate', String(rate)); remember('mp.staff', staff.trim())
         void save(editing ? `/v1/admin/shops/${shopId}/bills/${editing.id}/edit` : `/v1/admin/shops/${shopId}/entries/parchi`, {

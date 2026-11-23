@@ -101,6 +101,18 @@ export function usePayMode(initial: Pay | null, chosen: boolean) {
 /** The counter's walk-ins, first in the list as on the parchi screen: no khata, paid there and then. */
 export const WALK_INS = ['Cash', 'Bank'] as const
 export const isWalkInName = (name: string) => WALK_INS.some((w) => w.toLowerCase() === name.trim().toLowerCase())
+/** Said when a parchi left on udhaar names the walk-in Cash or Bank, as the app's parchi screen says it. */
+export const WALK_IN_UDHAAR = 'Udhaar sirf grahak ke naam par: naam likhein ya poora paisa lein'
+/**
+ * Why a parchi that leaves udhaar can't be saved, or null when it can: udhaar needs a grahak,
+ * and the walk-in Cash or Bank is nobody's khata (Free is exempt; it has no money on it).
+ */
+export function udhaarBuyerError(buyer: PickedBuyer | null, leavesUdhaar: boolean): string | null {
+  if (!leavesUdhaar) return null
+  if (!buyer || !buyer.name.trim()) return t('Udhaar ke liye grahak chunein')
+  if (isWalkInName(buyer.name)) return t(WALK_IN_UDHAAR)
+  return null
+}
 const walkInLabel = (name: string) => (name === 'Bank' ? t('Bank (UPI)') : t('Cash grahak'))
 
 /**

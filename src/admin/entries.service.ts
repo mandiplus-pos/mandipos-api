@@ -34,6 +34,10 @@ function fy(): string {
   const start = d.getUTCMonth() >= 3 ? d.getUTCFullYear() : d.getUTCFullYear() - 1;
   return `${String(start % 100).padStart(2, '0')}${String((start + 1) % 100).padStart(2, '0')}`;
 }
+/** The walk-in names that are nobody's khata (Free is exempt: it carries no money). */
+export const WALK_IN_NAME = /^\s*(cash|bank)\s*$/i;
+/** A parchi left on udhaar for the walk-in Cash or Bank is refused, as the app's parchi screen refuses it. */
+export const WALK_IN_UDHAAR = 'Udhaar sirf grahak ke naam par: naam likhein ya poora paisa lein';
 export const payModeCode = (cash: number, upi: number) => (cash > 0 && upi > 0 ? 'mixed' : upi > 0 ? 'upi' : cash > 0 ? 'cash' : 'credit');
 
 export type Grade = '1' | '2' | '3' | 'mix';
@@ -272,6 +276,7 @@ export class EntriesService {
     else if (input.pay === 'upi') upi = goods;
     else if (input.pay === 'split') { cash = input.cashPaise ?? 0; upi = input.upiPaise ?? 0; }
     if (cash + upi > goods) throw new BadRequestException('Jama rakam parchi se zyada hai');
+    if (!free && cash + upi < goods && WALK_IN_NAME.test(buyerName)) throw new UnprocessableEntityException(WALK_IN_UDHAAR);
     if (!buyerId && cash + upi < goods && !free) throw new BadRequestException('Udhaar ke liye grahak chunein');
     const chosen = free ? 'free' : input.pay === 'split' ? null : input.pay;
     const payMode = chosen && (goods === 0 || chosen === 'after') ? chosen : payModeCode(cash, upi);
@@ -383,6 +388,7 @@ export class EntriesService {
     else if (input.pay === 'upi') upi = total;
     else if (input.pay === 'split') { cash = input.cashPaise ?? 0; upi = input.upiPaise ?? 0; }
     if (cash + upi > total) throw new BadRequestException('Jama rakam parchi se zyada hai');
+    if (!free && cash + upi < total && WALK_IN_NAME.test(buyerName)) throw new UnprocessableEntityException(WALK_IN_UDHAAR);
     if (!buyerId && cash + upi < total && !free) throw new BadRequestException('Udhaar ke liye grahak chunein');
     const chosen = free ? 'free' : input.pay === 'split' ? null : input.pay;
     const payMode = chosen && (total === 0 || chosen === 'after') ? chosen : payModeCode(cash, upi);
