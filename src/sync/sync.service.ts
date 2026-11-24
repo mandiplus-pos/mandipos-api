@@ -5,11 +5,12 @@ import { Principal } from '../auth/tokens.service';
 import { Db, Tx } from '../db/db.service';
 import { IMMUTABLE_ON_UPDATE, SYNC_TABLES } from './tables';
 
-// A labour login may also scan a nariyal parchi back (Parchi wapas).
-const LABOUR_TABLES = new Set(['pickups', 'breakages', 'nariyal_returns']);
+// A labour login may also scan a nariyal parchi back (Parchi wapas), and take a wrong scan back
+// (Scan galat tha; the terminal asks for a staff passcode first).
+const LABOUR_TABLES = new Set(['pickups', 'breakages', 'nariyal_returns', 'nariyal_return_voids']);
 // Tables only a nariyal shop writes: Parchi wapas, Supplier Ledger kaat / baaki badla, Office
 // Aaya-Gaya (Ashish Brothers). Any other shop's row is turned away.
-const NARIYAL_TABLES = new Set(['nariyal_returns', 'supplier_adjustments', 'office_entries']);
+const NARIYAL_TABLES = new Set(['nariyal_returns', 'nariyal_return_voids', 'supplier_adjustments', 'office_entries']);
 
 /** txn: the terminal's local transaction the row was written in; rows sharing one apply together or not at all. */
 export type PushItem = { table: string; row: Record<string, unknown>; txn?: string };
@@ -159,6 +160,8 @@ export class SyncService {
     if (!def) return { id: rawId, status: 'rejected', error: `unknown table ${item?.table}` };
     // A labour login only hands boxes over and reports broken ones.
     if (!LABOUR_TABLES.has(item.table) && (await roleOf()) === 'labour') return { id: rawId, status: 'rejected', error: 'labour can only record pickups, breakages and parchi scans' };
+    // A partner reads the books on the website and writes nothing to them (migration 090).
+    if ((await roleOf()) === 'partner') return { id: rawId, status: 'rejected', error: 'a partner login cannot write entries' };
     const parsed = def.row.safeParse(item.row);
     if (!parsed.success) {
       const i = parsed.error.issues[0];
@@ -185,9 +188,19 @@ export class SyncService {
       const bill = await tx.query(`SELECT 1 FROM bills WHERE shop_id = $1 AND id = $2`, [shopId, row.bill_id]);
       if (!bill.rowCount) return { id: row.id as string, status: 'rejected', error: 'parchi not found' };
       // A parchi goes back once: a second scan of it (another counter, or gun and camera) is not
-      // stored again. The app counts scans per parchi, so nothing on the machines changes.
-      const seen = await tx.query(`SELECT 1 FROM nariyal_returns WHERE shop_id = $1 AND bill_id = $2 AND id <> $3`, [shopId, row.bill_id, row.id]);
+      // stored again. The app counts scans per parchi, so nothing on the machines changes. A scan
+      // taken back ("Scan galat tha", nariyal_return_voids) no longer counts, so a re-scan is kept.
+      const seen = await tx.query(
+        `SELECT 1 FROM nariyal_returns r WHERE r.shop_id = $1 AND r.bill_id = $2 AND r.id <> $3
+           AND NOT EXISTS (SELECT 1 FROM nariyal_return_voids v WHERE v.shop_id = r.shop_id AND v.return_id = r.id)`,
+        [shopId, row.bill_id, row.id]);
       if (seen.rowCount) return { id: row.id as string, status: 'skipped' };
+    }
+    if (table === 'nariyal_return_voids') {
+      // The parchi must be one of this shop's. The scan itself is not looked up: a terminal also
+      // takes back its own copy of a scan the server had skipped as a repeat, and that is harmless.
+      const bill = await tx.query(`SELECT 1 FROM bills WHERE shop_id = $1 AND id = $2`, [shopId, row.bill_id]);
+      if (!bill.rowCount) return { id: row.id as string, status: 'rejected', error: 'parchi not found' };
     }
     const settled = await this.settle(tx, shopId, p.deviceId, table, row, freed);
     if (settled.skip) {

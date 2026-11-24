@@ -3,10 +3,10 @@ import type { Writable } from 'node:stream';
 import { types as pgTypes } from 'pg';
 import { Db, Tx } from '../db/db.service';
 import { fyOf, fyRange, CreditorsService } from './creditors.service';
-import { BEEJAK_HEADS, NOT_EXPENSE, TRUCK_COST } from './insights.service';
+import { BEEJAK_HEADS, InsightsService, NOT_EXPENSE, TRUCK_COST } from './insights.service';
 import { BUILTIN_HEADS, OPENING_NOTES, type HeadType } from './masters.service';
 import { ReportsService, nameKey, type Pot } from './reports.service';
-import { BOUGHT, CASH_PART, IST_DAY, LIVE_BILLS, LIVE_COLS, UPI_PART, n } from './sql';
+import { BOUGHT, CASH_PART, IST_DAY, LIVE_BILLS, LIVE_COLS, SALE, UPI_PART, n } from './sql';
 import { writeXlsx, type Cell } from './xlsx';
 import { isAngoor, isCheeku } from '../common/commodity';
 import { CheekuCreditorsService } from '../cheeku/cheeku-creditors.service';
@@ -275,7 +275,7 @@ const backupTypes = { getTypeParser: ((oid: number, format?: 'text' | 'binary') 
 @Injectable()
 export class BooksService {
   constructor(private readonly db: Db, private readonly reports: ReportsService, private readonly creditors: CreditorsService,
-    private readonly cheekuCreditors: CheekuCreditorsService) {}
+    private readonly cheekuCreditors: CheekuCreditorsService, private readonly insights: InsightsService) {}
 
   private async mode(shopId: string): Promise<BookMode> {
     return modeOf(await this.commodity(shopId));
@@ -578,7 +578,7 @@ export class BooksService {
     const bucket = (col: string) => (by === 'day' ? `${col}::text` : `to_char(${col}, 'YYYY-MM')`);
     return this.db.withShop(shopId, async (tx) => {
       const q = async (sql: string, params: unknown[] = [from, to]) => (await tx.query<{ b: string; s: string; k?: string; d?: string }>(sql, params)).rows;
-      const sales = await q(`SELECT ${bucket('lb.business_date')} AS b, SUM(lb.total_paise - lb.rikshaw_paise) AS s FROM ${LIVE_BILLS} lb WHERE lb.business_date BETWEEN $1 AND $2 GROUP BY 1`);
+      const sales = await q(`SELECT ${bucket('lb.business_date')} AS b, SUM(${SALE()}) AS s FROM ${LIVE_BILLS} lb WHERE lb.business_date BETWEEN $1 AND $2 GROUP BY 1`);
       const cogs = await q(`SELECT ${bucket('lb.business_date')} AS b, SUM(l.qty * tc.cost::numeric / NULLIF(tc.recv, 0)) AS s
         FROM bill_lines l JOIN ${LIVE_BILLS} lb ON lb.id = l.bill_id JOIN (${TRUCK_COST}) tc ON tc.id = l.truck_id WHERE lb.business_date BETWEEN $1 AND $2 GROUP BY 1`);
       const spoiled = await q(`SELECT ${bucket('s.business_date')} AS b, SUM(s.qty * tc.cost::numeric / NULLIF(tc.recv, 0)) AS s
@@ -663,6 +663,75 @@ export class BooksService {
         qualities: [...qual.values()].sort((a, b) => b.salesPaise - a.salesPaise || a.name.localeCompare(b.name)),
       };
     });
+  }
+
+  // ---------------------------------------------------------------- Balance Sheet and P&L
+
+  /**
+   * The Balance Sheet as on [on], read straight off the Trial Balance's groups for the same day,
+   * so the two can never disagree:
+   *  - Lena (assets): cash, bank, debtors, laddan, assets — each group's Dr less its Cr;
+   *  - Dena (liabilities): creditors, liabilities, capital — each group's Cr less its Dr;
+   *  - Munafa (this FY to [on]): sales + income − purchase − expense, as the Trial Balance holds
+   *    them (earlier years are already in capital, "Pichhle saalon ka munafa");
+   *  - the suspense group goes on whichever side it falls, line by line; and should the Trial
+   *    Balance itself not tally, that gap is one more suspense line, never folded into a figure.
+   * Maal in stock is not valued here (the books have no stock account: kharid is all in purchase),
+   * so this munafa is not the Munafa report's, which counts only the laagat of what sold.
+   */
+  async balanceSheet(shopId: string, on: string) {
+    const tb = await this.trialBalance(shopId, on);
+    const group = (k: Group) => tb.groups.find((g) => g.key === k);
+    const net = (k: Group) => { const g = group(k); return g ? g.dr - g.cr : 0; };
+    type Line = { key: string; name: string; paise: number; sub?: string; link?: { kind: 'grahak' | 'supplier' | 'ledger'; id: string } };
+    type Section = { key: Group; name: string; paise: number; rows: Line[] };
+    // sign: +1 reads a group as Dr − Cr (assets), −1 as Cr − Dr (liabilities).
+    const section = (k: Group, sign: 1 | -1): Section | null => {
+      const g = group(k);
+      if (!g) return null;
+      return { key: k, name: g.name, paise: sign * (g.dr - g.cr),
+        rows: g.rows.map((r) => ({ key: r.key, name: r.name, paise: sign * (r.dr - r.cr), sub: r.sub, link: r.link })) };
+    };
+    const pick = (keys: Group[], sign: 1 | -1) => keys.map((k) => section(k, sign)).filter((x): x is Section => x !== null);
+    const assets = pick(['cash', 'bank', 'debtors', 'laddan', 'assets'], 1);
+    const liabilities = pick(['creditors', 'liabilities', 'capital'], -1);
+
+    const salesPaise = -net('sales'), incomePaise = -net('income'), purchasePaise = net('purchase'), expensePaise = net('expense');
+    const profitPaise = salesPaise + incomePaise - purchasePaise - expensePaise;
+
+    // Suspense: Dr sits with the assets, Cr with the liabilities. A Trial Balance that does not
+    // tally (it should) adds its gap here too, so the sheet says where the farq is.
+    const susp = group('suspense');
+    const suspenseRows: Line[] = (susp?.rows ?? []).map((r) => ({ key: r.key, name: r.name, paise: r.dr - r.cr, link: r.link }));
+    const untallied = tb.totals.dr - tb.totals.cr;
+    if (untallied) suspenseRows.push({ key: 'diff:untallied', name: 'Trial Balance mein farq', paise: -untallied });
+    const suspensePaise = suspenseRows.reduce((t, r) => t + r.paise, 0);
+
+    const assetsPaise = assets.reduce((t, g) => t + g.paise, 0);
+    const liabilitiesPaise = liabilities.reduce((t, g) => t + g.paise, 0);
+    const lenaPaise = assetsPaise + Math.max(suspensePaise, 0);
+    const denaPaise = liabilitiesPaise + profitPaise + Math.max(-suspensePaise, 0);
+    return {
+      on, fy: tb.fy, grapes: tb.grapes, cheeku: tb.cheeku,
+      assets, liabilities,
+      profit: { from: tb.fy.from, to: on, salesPaise, incomePaise, purchasePaise, expensePaise, profitPaise },
+      // paise > 0: on the Lena side (Dr); < 0: on the Dena side (Cr).
+      suspense: { paise: suspensePaise, untalliedPaise: untallied, rows: suspenseRows },
+      totals: { assetsPaise, liabilitiesPaise, lenaPaise, denaPaise, balanced: lenaPaise === denaPaise },
+      trialBalance: { dr: tb.totals.dr, cr: tb.totals.cr, differencePaise: tb.differencePaise },
+      memo: tb.memo,
+    };
+  }
+
+  /**
+   * Profit and loss over [from, to]: the Munafa report itself (InsightsService.munafa: bikri −
+   * laagat of maal sold − phoota − kharcha + aur aamdani), with Sale Purchase's month lines under
+   * it — both the same SQL, so the P&L, Munafa and Sale Purchase always agree. No second formula.
+   */
+  async pnl(shopId: string, from: string, to: string) {
+    if (from > to) throw new BadRequestException('from must be on or before to');
+    const [m, sp] = await Promise.all([this.insights.munafa(shopId, from, to), this.salePurchase(shopId, from, to, 'month')]);
+    return { ...m, grapes: sp.grapes, cheeku: sp.cheeku, kharidPaise: sp.totals.kharidPaise, beejakPaise: sp.totals.beejakPaise, months: sp.rows };
   }
 
   // ---------------------------------------------------------------- Purcha (purchase report)

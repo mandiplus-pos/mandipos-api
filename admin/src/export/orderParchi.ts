@@ -73,6 +73,20 @@ function head(s: SlipShop, loginPhone: string): Head {
   return { firm: s.name.trim(), band, numbers: [phone(s.phone || loginPhone), ...s.slipPhones.map(phone)].filter(Boolean), gstin: s.gstin.trim(), code: s.slipCode.trim() }
 }
 
+/**
+ * Slips.payBlock / payLines: Naqad, UPI (with the bank when said) and Udhaar, each with its
+ * amount; a ₹0 line is left out, and a slip with no money on it (no bhav yet, free) prints none.
+ */
+function payBlock(b: Pick<SlipBill, 'totalPaise' | 'cashPaise' | 'upiPaise' | 'upiBank'>, withUdhaar = true): Block[] {
+  if (b.totalPaise <= 0) return []
+  const udhaar = b.totalPaise - b.cashPaise - b.upiPaise
+  return [
+    ...(b.cashPaise > 0 ? [{ k: 'money' as const, label: 'Naqad', value: money(b.cashPaise) }] : []),
+    ...(b.upiPaise > 0 ? [{ k: 'money' as const, label: upiWay(b.upiBank), value: money(b.upiPaise) }] : []),
+    ...(withUdhaar && udhaar > 0 ? [{ k: 'money' as const, label: 'Udhaar', value: money(udhaar) }] : []),
+  ]
+}
+
 /** CheekuSlips.order: the counter's copy, with the CASH / UDHAAR bar, each gaadi and the QR. */
 export function orderParchi(b: SlipBill, shop: SlipShop, loginPhone: string): Slip {
   const x = b.slip ?? { gaadis: [], gramsByBrand: {}, buyerAddress: '', buyerStand: '' }
@@ -118,13 +132,10 @@ export function orderParchi(b: SlipBill, shop: SlipShop, loginPhone: string): Sl
   }
   // Nariyal: the rickshaw fare the customer pays on top.
   if (priced && (b.rikshawPaise ?? 0) > 0) blocks.push({ k: 'money', label: 'Rikshaw', value: money(b.rikshawPaise ?? 0) })
-  if (priced) {
-    blocks.push({ k: 'total', label: 'Kul rakam', value: money(b.totalPaise) })
-    const parts = [b.cashPaise > 0 ? ['Cash', b.cashPaise] as const : null, b.upiPaise > 0 ? [upiWay(b.upiBank), b.upiPaise] as const : null].filter((p) => p !== null)
-    if (parts.length === 1 && paid) blocks.push({ k: 'field', label: 'Payment', value: parts[0][0], strong: true })
-    else for (const [way, p] of parts) blocks.push({ k: 'money', label: way, value: money(p) })
-    if (!paid) blocks.push({ k: 'money', label: 'Udhaar', value: money(baaki) })
-  }
+  if (priced) blocks.push({ k: 'total', label: 'Kul rakam', value: money(b.totalPaise) })
+  // How it was settled, each way with its amount, on every order slip (udhaar ones too, where the
+  // shop hides the bhav on udhaar: the amount, never the bhav).
+  blocks.push(...payBlock(b))
   const picked = b.pickedQty ?? 0
   if (picked > 0) blocks.push({ k: 'field', label: 'Le gaye / baaki', value: `${groupIndian(picked)} / ${groupIndian(Math.max(0, qty - picked))}`, strong: true })
   blocks.push({ k: 'qr', data: b.id, caption: 'Gaadi par scan karein' })

@@ -4,7 +4,7 @@ import { api } from '../api'
 import { rupees, count } from '../format'
 import { t } from '../i18n'
 import { booksChanged } from '../useLoad'
-import { BuyerPicker, Chips, Field, isWalkInName, Money, Seg, Sheet, Tick, type PickedBuyer } from './fields'
+import { BuyerPicker, Chips, Field, isWalkInName, Money, payForBuyer, Seg, Sheet, Tick, udhaarBuyerError, usePayMode, type Pay, type PickedBuyer } from './fields'
 import type { EditBill, EditGaadi, EditRaseed, EntryKind, Editing, VoiceDraft } from './kinds'
 import { AngoorGaadiForm, AngoorParchiForm, type AngoorOptions } from './Angoor'
 import { CnSheet, JvSheet } from '../pages/Vouchers'
@@ -91,7 +91,6 @@ const perKatta = (size: KattaSize) => Number(size.slice(5))
 const PANNI_NAMES = ['Nariyal Pani', 'Jai Ho', 'AB', 'Organic', 'DFC'] as const
 /** Loose mazdoori and the rickshaw fare: paise per dana to start (₹0.30), as the app. */
 const PER_DANA = 30
-type Pay = 'cash' | 'upi' | 'credit' | 'split' | 'after' | 'free'
 
 /** What this browser remembers between parchis: the accountant's name and the mazdoori rate. */
 const remembered = (key: string, fallback: string) => { try { return localStorage.getItem(key) ?? fallback } catch { return fallback } }
@@ -144,7 +143,7 @@ function ParchiForm({ shopId, onClose, onDone, editing, draft }: FormProps & { e
   const [buyer, setBuyer] = useState<PickedBuyer | null>(was?.buyer ?? null)
   const [truckId, setTruckId] = useState(editing?.truckId ?? draft?.truckId ?? '')
   const [lines, setLines] = useState<Line[]>(was?.lines ?? [{ grade: '1', qty: 0, ratePaise: 0 }])
-  const [pay, setPay] = useState<Pay>(was?.pay ?? 'cash')
+  const { pay, setPay, followBuyer } = usePayMode(was?.pay ?? null, !!editing || !!draft?.pay)
   const [cash, setCash] = useState(editing && was?.pay === 'split' ? editing.cashPaise : draft?.cashPaise ?? 0)
   const [upi, setUpi] = useState(editing && was?.pay === 'split' ? editing.upiPaise : draft?.upiPaise ?? 0)
   const [bank, setBank] = useState(editing?.upiBank ?? '')
@@ -188,7 +187,6 @@ function ParchiForm({ shopId, onClose, onDone, editing, draft }: FormProps & { e
   const keepFare = !!was && was.rikshawSaved > 0 && qty === was.rikshawDana && rikshawRate === was.rikshawRate
   const rikshawPaise = !free && rikshawOn ? (keepFare ? was!.rikshawSaved : qty * rikshawRate) : 0
   const total = free ? 0 : lines.reduce((s, l) => s + l.qty * l.ratePaise, 0) + rikshawPaise
-  const walkIn = !buyer || (buyer.id === null && isWalkInName(buyer.name))
   const per = perKatta(size)
   const loose = pack === 'loose'
   const labourNag = labour ? (loose ? qty : Number(labourQty) || qty) : 0
@@ -210,9 +208,7 @@ function ParchiForm({ shopId, onClose, onDone, editing, draft }: FormProps & { e
   }
   const pickBuyer = (b: PickedBuyer | null) => {
     setBuyer(b)
-    if (b?.id === null && b.name === 'Cash') setPay('cash')
-    else if (b?.id === null && b.name === 'Bank') setPay('upi')
-    else if (b?.id && pay === 'cash') setPay('credit')
+    followBuyer(b)
     if (b?.id) { setAddress(b.address ?? ''); setStand(b.destination ?? '') }
   }
 
@@ -225,7 +221,9 @@ function ParchiForm({ shopId, onClose, onDone, editing, draft }: FormProps & { e
       onSave={() => {
         if (!truck) return setError(t('Koi khuli gaadi nahi'))
         if (!qty) return setError(t('Nag daalein'))
-        if (!free && walkIn && (pay === 'credit' || pay === 'after' || (pay === 'split' && cash + upi < total))) return setError(t('Udhaar ke liye grahak chunein'))
+        if (!pay) return setError(t('Pehle payment mode chunein'))
+        const noUdhaar = udhaarBuyerError(buyer, !free && (pay === 'credit' || pay === 'after' || (pay === 'split' && cash + upi < total)), pay === 'split' ? total - cash - upi : undefined)
+        if (noUdhaar) return setError(noUdhaar)
         if (delivery && !address.trim() && !stand.trim()) return setError(t('Delivery ka pata daalein'))
         remember('mp.labourRate', String(rate)); remember('mp.staff', staff.trim())
         void save(editing ? `/v1/admin/shops/${shopId}/bills/${editing.id}/edit` : `/v1/admin/shops/${shopId}/entries/parchi`, {
@@ -414,7 +412,7 @@ function fromDraft(d: Draft<'parchi'>) {
   return {
     buyer: d.buyer as PickedBuyer | null,
     lines: d.lines.length ? d.lines : [{ grade: '1' as const, qty: 0, ratePaise: 0 }],
-    pay: (d.pay ?? 'cash') as Pay, packing, panni: d.panni,
+    pay: (d.pay ?? payForBuyer(d.buyer as PickedBuyer | null)) as Pay | null, packing, panni: d.panni,
     size: (d.size ?? 'katta10') as KattaSize, kattaName: d.kattaName, parchune: d.parchune,
     // Tied goods carry mazdoori as a matter of course, as when the packing is tapped.
     labour: d.labour || packing !== 'loose', labourQty: '', rate: null, rikshaw: false, rikshawRate: PER_DANA, rikshawSaved: 0, rikshawDana: 0, looseRate: PER_DANA,
@@ -526,6 +524,7 @@ function GaadiForm({ shopId, onClose, onDone, editing }: FormProps & { editing?:
   const total = lots.reduce((s, l) => s + l.qty * l.ratePaise, 0) + freight
   if (o?.commodity === 'angoor') return <AngoorGaadiForm shopId={shopId} o={o} editing={editing} onClose={onClose} onDone={onDone} />
   if (o && isCheeku(o.commodity)) return <CheekuGaadiForm shopId={shopId} o={o} editing={editing} onClose={onClose} onDone={onDone} />
+  if (o && editing) return <GaadiEditForm shopId={shopId} amrud={o.commodity === 'amrud'} suppliers={o.suppliers} editing={editing} onClose={onClose} onDone={onDone} />
   if (o && o.commodity && o.commodity !== 'nariyal') return <Sheet title={t('Nayi Gaadi')} onClose={onClose} onSave={onClose} saving={false} error="" saveLabel={t('Theek hai')}><p className="muted">{t('Amrud ki party app se jodein.')}</p></Sheet>
   return (
     <Sheet title={t('Nayi Gaadi')} onClose={onClose} saving={saving} error={error}
@@ -564,6 +563,41 @@ function GaadiForm({ shopId, onClose, onDone, editing }: FormProps & { editing?:
       </div>
       <Field label={t('Bhada (optional)')}><Money value={freight} onChange={setFreight} /></Field>
       <div className="total-line"><span>{t('{n} dana', { n: count(lots.reduce((s, l) => s + l.qty, 0)) })}</span><b className="money">{rupees(total)}</b></div>
+    </Sheet>
+  )
+}
+
+/**
+ * A nariyal or amrud gaadi changed: its number (a number typed wrong when it came), and a nariyal
+ * gaadi's supplier. Its maal stays the app's to change. Amrud: the party's name is its khata, so
+ * it is renamed from the app (which moves it on every gaadi), never here. Bhada and place are not
+ * sent, so they stay as they are.
+ */
+function GaadiEditForm({ shopId, amrud, suppliers, editing, onClose, onDone }: {
+  shopId: string; amrud: boolean; suppliers: string[]; editing: EditGaadi; onClose: () => void; onDone: (msg: string) => void
+}) {
+  const { saving, error, setError, save } = useSave(onDone)
+  const [number, setNumber] = useState(editing.number === '-' ? '' : editing.number)
+  const [supplier, setSupplier] = useState(editing.supplier)
+  return (
+    <Sheet title={t('Gaadi badlein')} onClose={onClose} saving={saving} error={error}
+      onSave={() => {
+        const no = number.toUpperCase().replace(/\s+/g, '')
+        // Amrud: the vehicle is optional ("-" when none), as the app has it.
+        if (!no && !amrud) return setError(t('Gaadi number daalein'))
+        void save(`/v1/admin/shops/${shopId}/gaadi/${editing.truckId}`, { number: no || '-', supplier: amrud ? editing.supplier : supplier, lots: [] },
+          () => t('Gaadi {n} badal gayi', { n: no || '-' }))
+      }}>
+      <div className="row2">
+        <Field label={t('Gaadi number')}><input className="field" value={number} autoFocus maxLength={20} onChange={(e) => setNumber(e.target.value.toUpperCase())} placeholder="RJ14AB1234" /></Field>
+        {amrud ? <Field label={t('Party')}><input className="field" value={editing.supplier} readOnly disabled /></Field> : (
+          <Field label={t('Supplier')}>
+            <input className="field" list="gaadi-edit-sup" value={supplier} maxLength={120} onChange={(e) => setSupplier(e.target.value)} />
+            <datalist id="gaadi-edit-sup">{suppliers.map((s) => <option key={s} value={s} />)}</datalist>
+          </Field>
+        )}
+      </div>
+      <p className="muted">{amrud ? t('Party ka naam aur maal app se badlein.') : t('Maal aur ginti app se badlein.')}</p>
     </Sheet>
   )
 }

@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Db } from '../db/db.service';
-import { BALANCES, BOUGHT, IST_DAY, LIVE_BILLS, STORE_BACK, n } from './sql';
+import { BALANCES, BOUGHT, IST_DAY, LIVE_BILLS, SALE, STORE_BACK, n } from './sql';
 import { nameKey } from './reports.service';
 import { uuidv7 } from '../common/uuid';
 
@@ -127,7 +127,7 @@ export class InsightsService {
     if (from > to) throw new BadRequestException('from must be on or before to');
     return this.db.withShop(shopId, async (tx) => {
       const sales = n((await tx.query<{ s: string }>(
-        `SELECT COALESCE(SUM(total_paise - rikshaw_paise), 0) AS s FROM ${LIVE_BILLS} lb WHERE lb.business_date BETWEEN $1 AND $2`, [from, to])).rows[0].s);
+        `SELECT COALESCE(SUM(${SALE()}), 0) AS s FROM ${LIVE_BILLS} lb WHERE lb.business_date BETWEEN $1 AND $2`, [from, to])).rows[0].s);
       const cogs = n((await tx.query<{ s: string }>(
         `SELECT COALESCE(SUM(l.qty * tc.cost::numeric / NULLIF(tc.recv, 0)), 0)::bigint AS s
          FROM bill_lines l JOIN ${LIVE_BILLS} lb ON lb.id = l.bill_id JOIN (${TRUCK_COST}) tc ON tc.id = l.truck_id

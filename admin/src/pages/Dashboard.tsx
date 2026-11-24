@@ -68,13 +68,29 @@ export function Dashboard({ shopId }: { shopId: string }) {
         <div className={`stack${loading ? ' dim' : ''}`}>
           <div className="grid g4">
             <Kpi icon={<I.IRupee />} tone="green" label={t('Bikri')} value={rupees(data.d.now.salesPaise)} to={to('daybook')}
-              sub={<><Change now={data.d.now.salesPaise} before={data.d.before.salesPaise} /> · {t('{n} parchi', { n: count(data.d.now.slips) })}</>} />
+              sub={<><Change now={data.d.now.salesPaise} before={data.d.before.salesPaise} /> · {t('{n} parchi', { n: count(data.d.now.slips) })}
+                {data.d.now.rikshawPaise > 0 && <> · {t('Rikshaw {amt} alag', { amt: rupees(data.d.now.rikshawPaise) })}</>}</>} />
             <Kpi icon={<I.ICart />} tone="blue" label={t('Kharid')} value={rupees(data.d.now.purchasePaise)} to={to('suppliers')}
               sub={<><Change now={data.d.now.purchasePaise} before={data.d.before.purchasePaise} /> · {t('{n} gaadi', { n: count(data.d.now.gaadis) })}</>} />
             <Kpi icon={<I.IUdhaar />} tone="amber" label={t('Udhaar (lena)')} value={<span className="due">{rupees(data.d.receivables.duePaise)}</span>} to={to('outstanding')}
               sub={t('{n} grahak', { n: count(data.d.receivables.count) })} />
             <Kpi icon={<I.IWallet />} tone="red" label={t('Supplier (dena)')} value={rupees(data.d.payables.duePaise)} to={to('suppliers')}
               sub={t('{n} supplier', { n: count(data.d.payables.count) })} />
+          </div>
+          {/* The period's bikri by how it was paid: cash and UPI at the counter, and what was written on udhaar that day.
+              Nariyal: these keep the rickshaw fare paid or written with the slip, which Bikri leaves out
+              (cash + UPI + udhaar − rikshaw = bikri, as the app's Hisab), so the fare has its own card. */}
+          <div className={`grid ${data.d.now.rikshawPaise > 0 ? 'g4' : 'g3'}`}>
+            <Kpi icon={<I.ICash />} tone="green" label={t('Cash bikri')} value={rupees(data.d.now.cashPaise)} to={to('daybook')}
+              sub={<Change now={data.d.now.cashPaise} before={data.d.before.cashPaise} />} />
+            <Kpi icon={<I.IRupee />} tone="blue" label={t('UPI bikri')} value={rupees(data.d.now.upiPaise)} to={to('daybook')}
+              sub={<Change now={data.d.now.upiPaise} before={data.d.before.upiPaise} />} />
+            <Kpi icon={<I.IUdhaar />} tone="amber" label={t('Udhaar bikri')} value={rupees(data.d.now.udhaarPaise)} to={to('daybook')}
+              sub={<Change now={data.d.now.udhaarPaise} before={data.d.before.udhaarPaise} />} />
+            {data.d.now.rikshawPaise > 0 && (
+              <Kpi icon={<I.ITruck />} tone="red" label={t('Rikshaw (rickshaw wale ka)')} value={rupees(data.d.now.rikshawPaise)} to={to('daybook')}
+                sub={t('Bikri mein nahi')} />
+            )}
           </div>
 
           {angoor && <AngoorStrip shopId={shopId} from={period.from} to={period.to} />}

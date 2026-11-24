@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Db, Tx } from '../db/db.service';
-import { BOUGHT, CASH_PART, IST_DAY, LIVE_BILLS, LIVE_COLS, UPI_PART, n, supplierJvs } from './sql';
+import { BOUGHT, CASH_PART, DAY_BILLS, DAY_COLS, IST_DAY, LIVE_BILLS, LIVE_COLS, RIKSHAW, SALE, UPI_PART, n, supplierJvs } from './sql';
 
 /**
  * Tally's reports for one shop, read off the books the terminals sync. Each one ports the
@@ -46,6 +46,96 @@ export function age(dues: { at: Date; amount: number }[], paid: number, today: s
   return { ...b, total, oldestDays };
 }
 
+/** One open due of a grahak (Store.Due): a slip, or purana udhaar written by hand. */
+export type OpenDue = {
+  billId: string | null; slipNo: number | null; date: string; at: Date
+  /** The slip's total, or the udhaar entry's amount. */
+  totalPaise: number
+  /** A slip: paid at the counter when it was written (bills.paid_paise) - already sale, not vasooli. */
+  paidAtCounterPaise: number
+  /** A slip: vasooli taken against it since. */
+  collectedOnSlipPaise: number
+  /** Everything that came off it: at the counter, on the slip, and money without a slip settled oldest-first. */
+  receivedPaise: number
+  openPaise: number
+}
+
+/**
+ * Store.openDues: every grahak's open dues, oldest first. Vasooli taken against a slip comes off
+ * that slip; money taken without one (or on a slip since voided), and a jama udhaar entry,
+ * settles the purana udhaar first, then the oldest slips. "Parchi 30,000 · mila 15,000 · baaki
+ * 15,000" reads off this. Display only: the cash book counts the counter money as sale and the
+ * vasooli as vasooli, never this.
+ */
+export async function openDues(tx: Tx): Promise<Map<string, OpenDue[]>> {
+  const { by, loose } = await duesAndLoose(tx);
+  for (const [buyer, dues] of by) {
+    let pool = (loose.get(buyer) ?? []).reduce((s, m) => s + m.paise, 0);
+    const settled = dues.map((d) => {
+      const off = Math.min(pool, Math.max(0, d.openPaise));
+      pool -= off;
+      const openPaise = d.openPaise - off;
+      return { ...d, openPaise, receivedPaise: Math.max(0, d.totalPaise - openPaise) };
+    }).filter((d) => d.openPaise > 0);
+    by.set(buyer, settled);
+  }
+  return by;
+}
+
+/**
+ * How much of each udhaar slip was paid off by money the grahak had already given before the
+ * slip was made (an advance, an on-account vasooli, a jama entry): "Jama se kata" on the Day
+ * Book. The same allocation as openDues (purana udhaar first, then the oldest slips), with the
+ * loose money spent oldest first, so a slip's share counts only what came in before its time.
+ * Display only, like openDues. billId -> paise; slips with none are left out.
+ */
+export async function jamaBeforeSlip(tx: Tx): Promise<Map<string, number>> {
+  const { by, loose } = await duesAndLoose(tx);
+  const out = new Map<string, number>();
+  for (const [buyer, dues] of by) {
+    const money = loose.get(buyer) ?? [];
+    if (!money.length) continue;
+    const total = money.reduce((s, m) => s + m.paise, 0);
+    let spent = 0;
+    for (const d of dues) {
+      const off = Math.min(total - spent, Math.max(0, d.openPaise));
+      if (d.billId && off > 0) {
+        const before = money.filter((m) => m.at.getTime() < d.at.getTime()).reduce((s, m) => s + m.paise, 0);
+        const covered = Math.min(off, Math.max(0, before - spent));
+        if (covered > 0) out.set(d.billId, covered);
+      }
+      spent += off;
+    }
+  }
+  return out;
+}
+
+/** openDues' inputs: each grahak's dues before any loose money (in settling order), and the loose money with its time. */
+async function duesAndLoose(tx: Tx) {
+  const slips = (await tx.query<{ id: string; buyer_id: string; slip_no: number | null; day: string; at: Date; total: string; paid: string; collected: string }>(
+    `SELECT lb.id, lb.buyer_id, lb.slip_no, lb.business_date::text AS day, lb.created_at AS at, lb.total_paise AS total, lb.paid_paise AS paid,
+            COALESCE((SELECT SUM(lc.amount_paise) FROM ${LIVE_COLS} lc WHERE lc.bill_id = lb.id), 0) AS collected
+     FROM ${LIVE_BILLS} lb WHERE lb.buyer_id IS NOT NULL AND lb.total_paise > lb.paid_paise`)).rows;
+  const entries = (await tx.query<{ buyer_id: string; at: Date; amt: string }>(
+    `SELECT buyer_id, created_at AS at, amount_paise AS amt FROM udhaar_entries WHERE amount_paise <> 0`)).rows;
+  const loose = new Map<string, { at: Date; paise: number }[]>();
+  const addLoose = (buyer: string, at: Date, paise: number) => { const l = loose.get(buyer) ?? []; l.push({ at, paise }); loose.set(buyer, l); };
+  // A negative entry is jama: the shop holds the grahak's money, which pays off their dues.
+  for (const e of entries) if (n(e.amt) < 0) addLoose(e.buyer_id, e.at, -n(e.amt));
+  for (const r of (await tx.query<{ buyer_id: string; at: Date; amt: string }>(
+    `SELECT lc.buyer_id, lc.created_at AS at, lc.amount_paise AS amt FROM ${LIVE_COLS} lc
+     WHERE lc.bill_id IS NULL OR NOT EXISTS (SELECT 1 FROM ${LIVE_BILLS} lb WHERE lb.id = lc.bill_id)`)).rows) addLoose(r.buyer_id, r.at, n(r.amt));
+  for (const l of loose.values()) l.sort((x, y) => x.at.getTime() - y.at.getTime());
+  const by = new Map<string, OpenDue[]>();
+  const add = (buyer: string, d: OpenDue) => { const l = by.get(buyer) ?? []; l.push(d); by.set(buyer, l); };
+  for (const e of entries) if (n(e.amt) > 0) add(e.buyer_id, { billId: null, slipNo: null, date: istDay(e.at), at: e.at, totalPaise: n(e.amt),
+    paidAtCounterPaise: 0, collectedOnSlipPaise: 0, receivedPaise: 0, openPaise: n(e.amt) });
+  for (const b of slips) add(b.buyer_id, { billId: b.id, slipNo: b.slip_no, date: b.day, at: b.at, totalPaise: n(b.total),
+    paidAtCounterPaise: n(b.paid), collectedOnSlipPaise: n(b.collected), receivedPaise: 0, openPaise: n(b.total) - n(b.paid) - n(b.collected) });
+  for (const dues of by.values()) dues.sort((x, y) => Number(!!x.billId) - Number(!!y.billId) || x.at.getTime() - y.at.getTime());
+  return { by, loose };
+}
+
 type BookLine = { id: string; date: string; at: string; kind: 'bikri' | 'vasooli' | 'in' | 'out'; title: string; party: string; note: string; inPaise: number; outPaise: number; auto: boolean };
 
 @Injectable()
@@ -85,11 +175,11 @@ export class ReportsService {
     if (pot !== 'office') {
       const bills = (await tx.query<{ day: string; amt: string; n: string }>(
         `SELECT business_date::text AS day, SUM(${pot === 'galla' ? 'cash_paise' : 'upi_paise'}) AS amt, COUNT(*) AS n
-         FROM ${LIVE_BILLS} lb WHERE business_date BETWEEN $1 AND $2 GROUP BY business_date`, [since, to])).rows;
+         FROM ${DAY_BILLS} lb WHERE business_date BETWEEN $1 AND $2 GROUP BY business_date`, [since, to])).rows;
       for (const r of bills) if (n(r.amt) > 0) out.push({ id: `bikri-${r.day}`, date: r.day, at: `${r.day}T00:00:00Z`, kind: 'bikri', title: pot === 'galla' ? 'Cash bikri' : 'UPI bikri', party: '', note: `${r.n} parchi`, inPaise: n(r.amt), outPaise: 0, auto: true });
       const cols = (await tx.query<{ day: string; amt: string; n: string }>(
         `SELECT business_date::text AS day, SUM(${pot === 'galla' ? CASH_PART : UPI_PART}) AS amt, COUNT(*) AS n
-         FROM ${LIVE_COLS} lc WHERE business_date BETWEEN $1 AND $2 GROUP BY business_date`, [since, to])).rows;
+         FROM ${DAY_COLS} lc WHERE business_date BETWEEN $1 AND $2 GROUP BY business_date`, [since, to])).rows;
       for (const r of cols) if (n(r.amt) > 0) out.push({ id: `vasooli-${r.day}`, date: r.day, at: `${r.day}T00:00:01Z`, kind: 'vasooli', title: pot === 'galla' ? 'Cash vasooli' : 'UPI vasooli', party: '', note: `${r.n} raseed`, inPaise: n(r.amt), outPaise: 0, auto: true });
     }
     const into = Object.entries(TRANSFER_INTO).filter(([, p]) => p === pot).map(([c]) => c);
@@ -129,10 +219,17 @@ export class ReportsService {
     const byBuyer = new Map<string, { at: Date; amount: number }[]>();
     for (const d of dues) { const l = byBuyer.get(d.buyer_id) ?? []; l.push({ at: d.at, amount: n(d.amt) }); byBuyer.set(d.buyer_id, l); }
     const paidBy = new Map(paid.map((p) => [p.buyer_id, p]));
+    const open = await openDues(tx);
     const rows = buyers.map((g) => {
       const a = age(byBuyer.get(g.id) ?? [], n(paidBy.get(g.id)?.amt), today);
+      const mine = open.get(g.id) ?? [];
       return { buyerId: g.id, name: g.name, phone: g.phone, code: g.code, duePaise: a.total, d0_7: a.d0_7, d8_30: a.d8_30, d31: a.d31, oldestDays: a.oldestDays,
-        lastSlipOn: g.last_slip, lastPaidAt: paidBy.get(g.id)?.last?.toISOString() ?? null };
+        lastSlipOn: g.last_slip, lastPaidAt: paidBy.get(g.id)?.last?.toISOString() ?? null,
+        // Display only (the app's Collections): what the open dues came to and what has come off
+        // them. The totals above, and the cash book, never read these.
+        billedPaise: mine.reduce((t, d) => t + d.totalPaise, 0), receivedPaise: mine.reduce((t, d) => t + d.receivedPaise, 0),
+        slips: mine.filter((d) => d.billId).map(({ billId, slipNo, date, totalPaise, paidAtCounterPaise, collectedOnSlipPaise, receivedPaise, openPaise }) =>
+          ({ billId: billId!, slipNo, date, totalPaise, paidAtCounterPaise, collectedOnSlipPaise, receivedPaise, openPaise })) };
     }).filter((r) => r.duePaise > 0).sort((a, b) => b.duePaise - a.duePaise);
     const totals = rows.reduce((t, r) => ({ duePaise: t.duePaise + r.duePaise, d0_7: t.d0_7 + r.d0_7, d8_30: t.d8_30 + r.d8_30, d31: t.d31 + r.d31 }), { duePaise: 0, d0_7: 0, d8_30: 0, d31: 0 });
     return { totals: { ...totals, count: rows.length }, rows };
@@ -323,16 +420,26 @@ export class ReportsService {
     const prevFrom = new Date(Date.parse(`${from}T00:00:00Z`) - len * 86_400_000).toISOString().slice(0, 10);
     return this.db.withShop(shopId, async (tx) => {
       const totals = async (a: string, b: string) => {
-        const s = (await tx.query<{ sales: string; slips: string }>(
-          `SELECT COALESCE(SUM(total_paise - rikshaw_paise), 0) AS sales, COUNT(*) AS slips FROM ${LIVE_BILLS} lb WHERE business_date BETWEEN $1 AND $2`, [a, b])).rows[0];
+        // How the period's slips were paid at the counter: cash, UPI, and what each wrote on udhaar
+        // that day (total less paid; vasooli taken since does not shrink it), as the app's Hisab.
+        // A slip keeps its own cash/UPI columns (CASH_PART/UPI_PART are the collections' split).
+        // A slip refunded after its day still counts on it (DAY_BILLS), owing nothing (Store.summary).
+        const s = (await tx.query<{ sales: string; rikshaw: string; slips: string; cash: string; upi: string; udhaar: string }>(
+          `SELECT COALESCE(SUM(${SALE()}), 0) AS sales, COALESCE(SUM(${RIKSHAW()}), 0) AS rikshaw, COUNT(*) AS slips,
+                  COALESCE(SUM(cash_paise), 0) AS cash, COALESCE(SUM(upi_paise), 0) AS upi,
+                  COALESCE(SUM(GREATEST(0, total_paise - paid_paise)) FILTER (WHERE NOT EXISTS (SELECT 1 FROM bill_voids v WHERE v.bill_id = lb.id)), 0) AS udhaar
+           FROM ${DAY_BILLS} lb WHERE business_date BETWEEN $1 AND $2`, [a, b])).rows[0];
         const p = await this.purchases(tx, a, b);
-        return { salesPaise: n(s.sales), slips: n(s.slips), purchasePaise: p.reduce((t, x) => t + x.paise, 0), gaadis: p.reduce((t, x) => t + x.gaadis, 0) };
+        return {
+          salesPaise: n(s.sales), rikshawPaise: n(s.rikshaw), slips: n(s.slips), cashPaise: n(s.cash), upiPaise: n(s.upi), udhaarPaise: n(s.udhaar),
+          purchasePaise: p.reduce((t, x) => t + x.paise, 0), gaadis: p.reduce((t, x) => t + x.gaadis, 0),
+        };
       };
       const now = await totals(from, to);
       const before = await totals(prevFrom, prevDay(from));
       const sales = (await tx.query<{ d: string; s: string }>(
-        `SELECT d::date::text AS d, COALESCE(SUM(lb.total_paise - lb.rikshaw_paise), 0) AS s FROM generate_series($1::date, $2::date, interval '1 day') d
-         LEFT JOIN ${LIVE_BILLS} lb ON lb.business_date = d::date GROUP BY d ORDER BY d`, [trendFrom, to])).rows;
+        `SELECT d::date::text AS d, COALESCE(SUM(${SALE()}), 0) AS s FROM generate_series($1::date, $2::date, interval '1 day') d
+         LEFT JOIN ${DAY_BILLS} lb ON lb.business_date = d::date GROUP BY d ORDER BY d`, [trendFrom, to])).rows;
       const buys = new Map((await this.purchases(tx, trendFrom, to)).map((p) => [p.day, p.paise]));
       const receivables = await this.receivables(tx, today);
       const payables = await this.payables(tx, today);

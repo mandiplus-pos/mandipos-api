@@ -5,6 +5,7 @@ import path from 'node:path';
 import { Client } from 'pg';
 import request from 'supertest';
 import { uuidv7 } from '../src/common/uuid';
+import { createHash } from 'node:crypto';
 
 // A throwaway database, migrated as the owner, with the API connecting as the
 // restricted runtime role — the same split as production.
@@ -59,6 +60,11 @@ beforeAll(async () => {
   app = mod.createNestApplication({ bodyParser: false });
   configure(app);
   await app.init();
+  // Listen once, on 127.0.0.1 itself. Handed an idle server, supertest would listen(0) on
+  // [::] for every request and close it after; on macOS that wildcard port can be one another
+  // process (a Gradle daemon, say) holds on 127.0.0.1, and supertest dials 127.0.0.1, so the
+  // request lands there: "socket hang up", "Parse Error: Expected HTTP/", or a stray 404.
+  await app.listen(0, '127.0.0.1');
 });
 
 afterAll(async () => {
@@ -1568,7 +1574,7 @@ describe('shop approval and the admin portal', () => {
     expect(job).toMatchObject({ billId: slip.billId, image: null, title: 'Order Parchi #2' });
     await http().post(`/v1/print/jobs/${job.id}/done`).set(auth(shop.accessToken)).send({ ok: true }).expect(204);
     // A walk-in can't take udhaar, and no slip sells more than the gaadi has.
-    await http().post(`${base}/entries/parchi`).set(web).send({ truckId, lines: [{ grade: '1', qty: 5, ratePaise: 2500 }], pay: 'credit', packing: 'loose' }).expect(400);
+    await http().post(`${base}/entries/parchi`).set(web).send({ truckId, lines: [{ grade: '1', qty: 5, ratePaise: 2500 }], pay: 'credit', packing: 'loose' }).expect(422);
     await http().post(`${base}/entries/parchi`).set(web).send({ buyerId: raju, truckId, lines: [{ grade: '1', qty: 9999, ratePaise: 1 }], pay: 'cash', packing: 'loose' }).expect(422);
 
     // The shop's terminal pulls the slip like any other: under the website's own device and series.
@@ -3331,6 +3337,55 @@ describe('reports (General Ledger, Trial Balance, Ledger Multiple, big transacti
     await http().post(`${base}/books/khatas`).set(other.w).send({ ids: [g.id], from: d, to: d }).expect(403);
   });
 
+  it('reads the Balance Sheet off the Trial Balance: it balances, ties out, and the P&L is Munafa', async () => {
+    const { w, base } = await web('9845700021', { name: 'BS Nariyal' });
+    const d = istDay();
+    const g = (await http().post(`${base}/entries/grahak`).set(w).send({ name: 'Suresh', openingPaise: 300000 }).expect(201)).body;
+    await http().post(`${base}/entries/gaadi`).set(w).send({ number: 'KA02', supplier: 'Tiptur Traders', freightPaise: 10000, lots: [{ brandName: 'Tiptur', grade: '1', qty: 50, ratePaise: 1000 }] }).expect(201);
+    const truckId = (await http().get(`${base}/stock`).set(w).expect(200)).body.rows[0].truckId;
+    await http().post(`${base}/entries/parchi`).set(w).send({ buyerId: g.id, truckId, lines: [{ grade: '1', qty: 10, ratePaise: 2000 }], pay: 'credit', packing: 'loose' }).expect(201);
+    await http().post(`${base}/entries/parchi`).set(w).send({ buyerName: 'Cash', truckId, lines: [{ grade: '1', qty: 5, ratePaise: 2000 }], pay: 'cash', packing: 'loose' }).expect(201);
+    await http().post(`${base}/entries/vasooli`).set(w).send({ buyerId: g.id, cashPaise: 4000, upiPaise: 1000 }).expect(201);
+    await http().post(`${base}/entries/daybook`).set(w).send({ direction: 'out', category: 'kharcha', mode: 'cash', amountPaise: 500 }).expect(201);
+    await http().post(`${base}/entries/supplier-payment`).set(w).send({ supplier: 'Tiptur Traders', mode: 'cash', amountPaise: 20000 }).expect(201);
+
+    const tb = (await http().get(`${base}/books/trial-balance?on=${d}`).set(w).expect(200)).body;
+    const bs = (await http().get(`${base}/books/balance-sheet?on=${d}`).set(w).expect(200)).body;
+    // It balances: Lena = Dena, nothing hidden.
+    expect(bs.totals.balanced).toBe(true);
+    expect(bs.totals.lenaPaise).toBe(bs.totals.denaPaise);
+    expect(bs.totals.assetsPaise + Math.max(bs.suspense.paise, 0)).toBe(bs.totals.liabilitiesPaise + bs.profit.profitPaise + Math.max(-bs.suspense.paise, 0));
+    // Its totals are the Trial Balance's for the same day, group by group.
+    const net = (k: string) => { const x = tb.groups.find((y: any) => y.key === k); return x ? x.dr - x.cr : 0; };
+    expect(bs.trialBalance).toEqual({ dr: tb.totals.dr, cr: tb.totals.cr, differencePaise: tb.differencePaise });
+    expect(bs.totals.assetsPaise).toBe(['cash', 'bank', 'debtors', 'laddan', 'assets'].reduce((t, k) => t + net(k), 0));
+    expect(bs.totals.liabilitiesPaise).toBe(-['creditors', 'liabilities', 'capital'].reduce((t, k) => t + net(k), 0));
+    expect(bs.profit.profitPaise).toBe(-['sales', 'income', 'purchase', 'expense'].reduce((t, k) => t + net(k), 0));
+    expect(bs.suspense.paise).toBe(net('suspense'));
+    expect(bs.suspense.untalliedPaise).toBe(0);
+    // The figures themselves: bikri ₹300, kharid ₹500 + bhada ₹100, kharcha ₹5; Suresh owes ₹3,000 + ₹200 − ₹50;
+    // Tiptur is owed ₹600 − ₹200; the purana udhaar is the suspense on the Dena side.
+    expect(bs.profit).toMatchObject({ salesPaise: 30000, purchasePaise: 60000, expensePaise: 500, profitPaise: 30000 - 60000 - 500 });
+    expect(bs.assets.find((x: any) => x.key === 'debtors')).toMatchObject({ paise: 300000 + 20000 - 5000 });
+    expect(bs.liabilities.find((x: any) => x.key === 'creditors')).toMatchObject({ paise: 40000 });
+    expect(bs.suspense.paise).toBe(-300000);
+    expect(bs.suspense.rows).toEqual([expect.objectContaining({ key: 'diff:opening_grahak', paise: -300000 })]);
+    // A day before anything: all zeros, still balanced.
+    expect((await http().get(`${base}/books/balance-sheet?on=2020-01-01`).set(w).expect(200)).body.totals).toMatchObject({ lenaPaise: 0, denaPaise: 0, balanced: true });
+
+    // P&L over a period is the Munafa report, with Sale Purchase's month lines under it.
+    const pl = (await http().get(`${base}/books/pnl?from=${d}&to=${d}`).set(w).expect(200)).body;
+    const m = (await http().get(`${base}/munafa?from=${d}&to=${d}`).set(w).expect(200)).body;
+    expect(pl).toMatchObject({ salesPaise: m.salesPaise, grossPaise: m.grossPaise, expensePaise: m.expensePaise, netPaise: m.netPaise, kharidPaise: 60000 });
+    expect(pl.months).toEqual([expect.objectContaining({ key: d.slice(0, 7), salesPaise: 30000, netPaise: m.netPaise })]);
+    await http().get(`${base}/books/pnl?from=${d}&to=2020-01-01`).set(w).expect(400);
+
+    // Another shop's owner gets neither.
+    const other = await web('9845700022', { name: 'Other BS' });
+    await http().get(`${base}/books/balance-sheet`).set(other.w).expect(403);
+    await http().get(`${base}/books/pnl?from=${d}&to=${d}`).set(other.w).expect(403);
+  });
+
   it('balances a grapes shop on beejaks: creditors as Supplier creditors, deductions as income, openings as the difference', async () => {
     const { w, base } = await web('9845700002', { name: 'TB Angoor', commodity: 'angoor' });
     const d = istDay();
@@ -4717,6 +4772,66 @@ describe('release publish', () => {
     await owner(`UPDATE release_publishers SET revoked_at = now() WHERE name = 'tester'`);
     await http().post('/v1/releases/pos').set('X-Release-Token', TOKEN).set('Content-Type', APK).send(apk).expect(403);
   });
+
+  describe('Mandi Plus 2 (pos2)', () => {
+    // Its own channel: com.mandiplus.pos signed with its own key, never mixed with the old app's builds.
+    const POS2_TOKEN = 'mpr_e2e-token-e2e-token-e2e-token-e2e-token-pos2';
+    const POS_ONLY = 'mpr_e2e-token-e2e-token-e2e-token-e2e-token-posx';
+    const fixture2 = process.env.APK_FIXTURE_POS2; // a Mandi Plus 2 release build (assemblePos2Release)
+    const debug2 = process.env.APK_FIXTURE_POS2_DEBUG; // the same app with the debug key (assemblePos2Debug)
+    const oldApp = process.env.APK_FIXTURE_OLD_APP ?? fixture; // any com.mandiplus.pos.uat build
+    const binary = (res: any, cb: any) => { const parts: Buffer[] = []; res.on('data', (c: Buffer) => parts.push(c)); res.on('end', () => cb(null, Buffer.concat(parts))); };
+
+    beforeAll(async () => {
+      // A new token can publish pos2 by default; one limited to the old app cannot.
+      await owner(`INSERT INTO release_publishers (name, token_sha256) VALUES ('tester2', sha256(convert_to('${POS2_TOKEN}', 'UTF8')))`);
+      await owner(`INSERT INTO release_publishers (name, token_sha256, flavors) VALUES ('posonly', sha256(convert_to('${POS_ONLY}', 'UTF8')), '{pos}')`);
+    });
+
+    it('takes a pos2 upload only with a token allowed pos2, and reads the file before anything else', async () => {
+      await http().post('/v1/releases/pos2').set('X-Release-Token', POS_ONLY).set('Content-Type', APK).send(Buffer.alloc(5000)).expect(403);
+      const junk = await http().post('/v1/releases/pos2').set('X-Release-Token', POS2_TOKEN).set('Content-Type', APK).send(Buffer.alloc(5000)).expect(400);
+      expect(junk.body.message).toMatch(/Not an APK/);
+    });
+
+    it('serves the newest pos2 build to Mandi Plus 2 and on the download page, apart from pos', async () => {
+      const s = await login('9811100291');
+      const auth = { Authorization: `Bearer ${s.accessToken}` };
+      const before = (await http().get('/v1/app/latest?flavor=pos').set(auth).expect(200)).body.release;
+      expect((await http().get('/v1/app/latest?flavor=pos2').set(auth).expect(200)).body).toEqual({ release: null });
+      await owner(`INSERT INTO app_releases (flavor, version_code, version_name, sha256, size_bytes, apk) VALUES
+        ('pos2', 7, '0.83.0', '${'3'.repeat(64)}', 3, '\\x000102')`);
+      const latest = await http().get('/v1/app/latest?flavor=pos2').set(auth).expect(200);
+      expect(latest.body.release).toMatchObject({ versionCode: 7, versionName: '0.83.0', sizeBytes: 3 });
+      expect((await http().get('/v1/app/latest?flavor=pos').set(auth).expect(200)).body.release).toEqual(before);
+      const got = await http().get('/v1/app/apk?flavor=pos2&versionCode=7').set(auth).buffer(true).parse(binary).expect(200);
+      expect((got.body as Buffer).length).toBe(3);
+      expect((await http().get('/v1/public/app').expect(200)).body.pos2).toMatchObject({ versionCode: 7 });
+      const dl = await http().get('/v1/public/app/download?flavor=pos2').buffer(true).parse(binary).expect(200);
+      expect(dl.headers['content-disposition']).toBe('attachment; filename="MandiPlus2-0.83.0.apk"');
+      await owner(`DELETE FROM app_releases WHERE flavor = 'pos2'`);
+    });
+
+    (oldApp ? it : it.skip)('refuses the old app (com.mandiplus.pos.uat) on the pos2 channel', async () => {
+      const apk = (await import('node:fs')).readFileSync(oldApp!);
+      const r = await http().post('/v1/releases/pos2').set('X-Release-Token', POS2_TOKEN).set('Content-Type', APK).send(apk).expect(400);
+      expect(r.body.message).toMatch(/not the pos2 app \(com\.mandiplus\.pos\)/);
+    });
+
+    (debug2 ? it : it.skip)('refuses Mandi Plus 2 signed with any key but its own', async () => {
+      const apk = (await import('node:fs')).readFileSync(debug2!);
+      const r = await http().post('/v1/releases/pos2').set('X-Release-Token', POS2_TOKEN).set('Content-Type', APK).send(apk).expect(400);
+      expect(r.body.message).toMatch(/Not signed with the release key/);
+    });
+
+    (fixture2 ? it : it.skip)('publishes a Mandi Plus 2 release on pos2 only, never on the old app\'s channel', async () => {
+      const apk = (await import('node:fs')).readFileSync(fixture2!);
+      await http().post('/v1/releases/pos').set('X-Release-Token', POS2_TOKEN).set('Content-Type', APK).send(apk).expect(400);
+      const r = await http().post('/v1/releases/pos2?notes=e2e').set('X-Release-Token', POS2_TOKEN).set('Content-Type', APK).send(apk).expect(201);
+      expect(r.body).toMatchObject({ published: true, flavor: 'pos2', by: 'tester2' });
+      await http().post('/v1/releases/pos2').set('X-Release-Token', POS2_TOKEN).set('Content-Type', APK).send(apk).expect(409);
+    });
+  });
 });
 
 describe('mark order', () => {
@@ -4913,6 +5028,52 @@ describe('nariyal gaadi deal', () => {
     finally { await c.end(); }
   });
 
+  it('takes a wrong Maal diya scan back (Scan galat tha), and refunds a parchi from a closed day out of today', async () => {
+    const t = new Date().toISOString();
+    const today = new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
+    const yesterday = new Date(Date.parse(today) - 86_400_000).toISOString().slice(0, 10);
+    const res = await registerShop('9877900051', 'Nariyal Refund');
+    const term = auth(res.accessToken);
+    const base = `/v1/admin/shops/${res.me.shop.id}`;
+    await http().post('/v1/admin/auth/otp').send({ phone: '9877900051' }).expect(204);
+    const web = auth((await http().post('/v1/admin/auth/verify').send({ phone: '9877900051', code: OtpService.issuedForTests.get('9877900051') }).expect(200)).body.token);
+    // Yesterday's paid parchi (₹100 cash), scanned back by mistake.
+    const billId = uuidv7();
+    await http().post('/v1/sync/push').set(term).send({ items: [{ table: 'bills', row: { id: billId, created_at: t, number: 'R1/2627/000001', kind: 'kachchi',
+      buyer_name: 'Cash', business_date: yesterday, pay_mode: 'cash', total_paise: 10000, paid_paise: 10000, cash_paise: 10000, slip_no: 1 } }] }).expect(200);
+    const scan = (id: string) => ({ table: 'nariyal_returns', row: { id, created_at: t, bill_id: billId } });
+    const unscan = (returnId: string, bill = billId) => ({ table: 'nariyal_return_voids', row: { id: uuidv7(), created_at: t, return_id: returnId, bill_id: bill, staff_name: 'Ramesh' } });
+    const s1 = uuidv7();
+    expect((await http().post('/v1/sync/push').set(term).send({ items: [scan(s1)] }).expect(200)).body.results[0].status).toBe('applied');
+    // Scanned back: the website can neither change nor delete it, as in the app.
+    await http().post(`${base}/bills/${billId}/void`).set(web).send({ reason: 'refunded' }).expect(422);
+    // Scan galat tha: the scan is taken back (a parchi this shop never made is turned away)...
+    expect((await http().post('/v1/sync/push').set(term).send({ items: [unscan(s1, uuidv7())] }).expect(200)).body.results[0])
+      .toMatchObject({ status: 'rejected', error: 'parchi not found' });
+    expect((await http().post('/v1/sync/push').set(term).send({ items: [unscan(s1)] }).expect(200)).body.results[0].status).toBe('applied');
+    // ...so a new scan of the same parchi is kept, not skipped as a repeat; then that one is taken back too.
+    const s2 = uuidv7();
+    expect((await http().post('/v1/sync/push').set(term).send({ items: [scan(s2)] }).expect(200)).body.results[0].status).toBe('applied');
+    expect((await http().post('/v1/sync/push').set(term).send({ items: [unscan(s2)] }).expect(200)).body.results[0].status).toBe('applied');
+    const feed = (await http().get('/v1/sync/pull?after=0&limit=500').set(term).expect(200)).body.changes as any[];
+    expect(feed.filter((c) => c.table === 'nariyal_return_voids').map((c) => c.row.return_id).sort()).toEqual([s1, s2].sort());
+
+    // Not scanned any more: refunded today. Yesterday is not rewritten; the money leaves today, in one line.
+    const out = (await http().post(`${base}/bills/${billId}/void`).set(web).send({ reason: 'refunded' }).expect(200)).body;
+    expect(out).toMatchObject({ refundPaise: 10000, late: true });
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const note = `Parchi #1 refund (${yesterday.slice(8, 10)} ${months[Number(yesterday.slice(5, 7)) - 1]} ki)`;
+    const day = (await http().get(`${base}/daybook?from=${today}&to=${today}`).set(web).expect(200)).body.entries;
+    expect(day.filter((e: any) => e.kind === 'in' || e.kind === 'out').map((e: any) => [e.kind, e.title, e.mode, e.amountPaise, e.note])).toEqual([
+      ['out', 'aur_gaya', 'cash', 10000, note],
+    ]);
+
+    // A cheeku shop can't take a scan back (nariyal only).
+    const s = await login('9877900052');
+    const cheeku = (await createApproved(s.accessToken, { name: 'Cheeku Unscan', mandi: 'Azadpur', shopNo: '1', role: 'owner', commodity: 'cheeku' })).accessToken;
+    expect((await http().post('/v1/sync/push').set(auth(cheeku)).send({ items: [unscan(uuidv7(), uuidv7())] }).expect(200)).body.results[0].status).toBe('rejected');
+  });
+
   it('keeps the rikshaw fare out of the website bikri, and a website edit keeps the app remark', async () => {
     const res = await registerShop('9877900041', 'Nariyal Web');
     const shopId = res.me.shop.id as string;
@@ -4937,6 +5098,38 @@ describe('nariyal gaadi deal', () => {
     await c.connect();
     try { expect((await c.query('SELECT remark, total_paise FROM bills WHERE id = $1', [edited.billId])).rows[0]).toEqual({ remark: 'Shaam 5 baje', total_paise: '60300' }); }
     finally { await c.end(); }
+  });
+
+  it('reports the rikshaw fare on its own, as the app: out of bikri, still in cash / UPI / udhaar and the galla', async () => {
+    const res = await registerShop('9877900042', 'Nariyal Rikshaw');
+    const shopId = res.me.shop.id as string;
+    await http().post('/v1/admin/auth/otp').send({ phone: '9877900042' }).expect(204);
+    const web = auth((await http().post('/v1/admin/auth/verify').send({ phone: '9877900042', code: OtpService.issuedForTests.get('9877900042') }).expect(200)).body.token);
+    const base = `/v1/admin/shops/${shopId}`;
+    const gaadi = (await http().post(`${base}/entries/gaadi`).set(web).send({ number: 'ka01rk2', supplier: 'Ramu', lots: [{ brandName: 'Kadur', grade: '1', qty: 100, ratePaise: 0 }] }).expect(201)).body;
+    // 10 dana at ₹50 + ₹6 rikshaw = ₹506, paid ₹300 cash + ₹206 UPI.
+    const a = (await http().post(`${base}/entries/parchi`).set(web).send({ truckId: gaadi.truckId, lines: [{ grade: '1', qty: 10, ratePaise: 5000 }],
+      pay: 'split', cashPaise: 30000, upiPaise: 20600, packing: 'loose', labour: false, rikshawPaise: 600 }).expect(201)).body;
+    // 5 dana at ₹40 + ₹3 rikshaw = ₹203, all on udhaar.
+    const b = (await http().post(`${base}/entries/parchi`).set(web).send({ buyerName: 'Raju', truckId: gaadi.truckId, lines: [{ grade: '1', qty: 5, ratePaise: 4000 }],
+      pay: 'credit', packing: 'loose', labour: false, rikshawPaise: 300 }).expect(201)).body;
+    const today = new Date(Date.now() + 5.5 * 3_600_000).toISOString().slice(0, 10);
+    const q = `?from=${today}&to=${today}`;
+    // The app's Hisab (Store.summary): Kul bikri = total − fare; cash, UPI and udhaar stay what the slips
+    // took and wrote (cash + UPI + udhaar − rikshaw = bikri); the fare is its own figure.
+    expect((await http().get(`${base}/summary${q}`).set(web).expect(200)).body).toMatchObject({ salesPaise: 70000, rikshawPaise: 900, cashPaise: 30000, upiPaise: 20600, slips: 2 });
+    expect((await http().get(`${base}/dashboard${q}`).set(web).expect(200)).body.now).toMatchObject({ salesPaise: 70000, rikshawPaise: 900, cashPaise: 30000, upiPaise: 20600, udhaarPaise: 20300 });
+    expect((await http().get(`${base}/munafa${q}`).set(web).expect(200)).body.salesPaise).toBe(70000);
+    expect((await http().get(`${base}/sales-register${q}`).set(web).expect(200)).body.totals).toMatchObject({ cashPaise: 30000, upiPaise: 20600, udhaarPaise: 20300, rikshawPaise: 900, totalPaise: 70000 });
+    // The Day Book rows keep what the grahak paid, and say how much of it is the fare.
+    const slips = (await http().get(`${base}/daybook${q}`).set(web).expect(200)).body.entries.filter((e: any) => e.kind === 'slip');
+    expect(slips.map((e: any) => [e.id, e.amountPaise, e.rikshawPaise, e.cashPaise, e.upiPaise, e.udhaarPaise]).sort()).toEqual([
+      [a.billId, 50600, 600, 30000, 20600, 0], [b.billId, 20300, 300, 0, 0, 20300]].sort());
+    // The galla (the app's expectedCash: cash sale + cash vasooli) holds the cash taken, fare and all; UPI lands in the bank.
+    const galla = (await http().get(`${base}/cashbook?pot=galla${q.replace('?', '&')}`).set(web).expect(200)).body;
+    expect(galla.lines.filter((l: any) => l.kind === 'bikri').map((l: any) => l.inPaise)).toEqual([30000]);
+    const bank = (await http().get(`${base}/cashbook?pot=bank${q.replace('?', '&')}`).set(web).expect(200)).body;
+    expect(bank.lines.filter((l: any) => l.kind === 'bikri').map((l: any) => l.inPaise)).toEqual([20600]);
   });
 
   it('makes a beejak for a Commission gaadi only, in a nariyal shop only', async () => {
@@ -4981,6 +5174,15 @@ describe('nariyal gaadi deal', () => {
     const s3 = (await http().post(`/v1/nariyal/beejaks/${comm}`).set(auth(shop)).send({ ...body, heads: [{ key: 'package', amountPaise: 5000 }] }).expect(201)).body;
     expect(s3).toMatchObject({ no: 1, expensesPaise: 5000, netPaise: 285000 });
     expect(s3.expenses).toContainEqual({ key: 'package', kind: 'flat', rate: null, amountPaise: 5000 });
+    // Mazdoori is a flat ₹ typed by the shop: ₹2,500 comes off as exactly ₹2,500, whatever the dana.
+    const s4 = (await http().post(`/v1/nariyal/beejaks/${comm}`).set(auth(shop)).send({ ...body, heads: [{ key: 'mazdoori', amountPaise: 250000 }] }).expect(201)).body;
+    expect(s4).toMatchObject({ no: 1, expensesPaise: 250000, netPaise: 290000 - 250000 });
+    expect(s4.expenses).toContainEqual({ key: 'mazdoori', kind: 'flat', rate: null, amountPaise: 250000 });
+    // An app from before sends it as a rate a dana with no amount: worked out as rate x dana, never 0.
+    const s5 = (await http().post(`/v1/nariyal/beejaks/${comm}`).set(auth(shop)).send({ ...body, heads: [{ key: 'mazdoori', rate: 30 }] }).expect(201)).body;
+    expect(s5.expenses).toContainEqual({ key: 'mazdoori', kind: 'dana', rate: 30, amountPaise: 3900 });
+    // Back to the package-cost beejak (net ₹2,850), which the opening balance below reads.
+    await http().post(`/v1/nariyal/beejaks/${comm}`).set(auth(shop)).send({ ...body, heads: [{ key: 'package', amountPaise: 5000 }] }).expect(201);
 
     // Opening balance: his earlier Commission gaadi's net (₹2,850) less ₹1,000 paid for it; another
     // supplier's gaadi, a later one and a payment for a gaadi not his earlier ones don't count.
@@ -5043,5 +5245,361 @@ describe('nariyal gaadi deal', () => {
     const other = uuidv7();
     await http().post('/v1/sync/push').set(auth(cheeku)).send({ items: [truck(other, t1, { bada_paid_at: t1, bada_paid_by: 'Ashish' })] }).expect(200);
     expect(await paidOf(other)).toEqual({ at: null, by: null });
+  });
+
+  /** The app's Store.badaPayoutId: java.util.UUID.nameUUIDFromBytes("bada-paid/<truckId>"). */
+  const badaPayoutId = (truckId: string) => {
+    const b = createHash('md5').update(`bada-paid/${truckId}`).digest();
+    b[6] = (b[6] & 0x0f) | 0x30; b[8] = (b[8] & 0x3f) | 0x80;
+    const h = b.toString('hex');
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  };
+
+  it('shows the website Bhada page and a nariyal supplier ledger (Purchase maal, Commission beejak, payments, kaat)', async () => {
+    const phoneNo = '9877900007';
+    const shop = await registerShop(phoneNo, 'Nariyal Hisab');
+    const base = `/v1/admin/shops/${shop.me.shop.id}`;
+    await http().post('/v1/admin/auth/otp').send({ phone: phoneNo }).expect(204);
+    const w = auth((await http().post('/v1/admin/auth/verify').send({ phone: phoneNo, code: OtpService.issuedForTests.get(phoneNo) }).expect(200)).body.token);
+    const t = new Date().toISOString(), day = istDay();
+    const brandId = uuidv7(), bought = uuidv7(), comm = uuidv7();
+    const pushed = await http().post('/v1/sync/push').set(auth(shop.accessToken)).send({ items: [
+      { table: 'brands', row: { id: brandId, created_at: t, updated_at: t, name: 'Calcutta', sort_order: 1, shelf_days: 7 } },
+      truck(bought, t, { number: 'P1', supplier: 'Ramu', deal: 'purchase', freight_paise: 50000, advance_paise: 10000, dala_paise: 2000, inaam_paise: 1000,
+        fine_paise: 500, halting_paise: 1500, bada_paid_at: t, bada_paid_by: 'Rajneesh' }),
+      truck(comm, t, { number: 'C1', supplier: 'RAMU.', deal: 'commission', freight_paise: 30000 }),
+      { table: 'truck_grades', row: { id: uuidv7(), created_at: t, truck_id: bought, brand_id: brandId, grade: '1', billed_qty: 100, received_qty: 100, rate_paise: 1000 } },
+      // The app's All paid line: id nameUUIDFromBytes("bada-paid/<truck>"), from the bank.
+      { table: 'daybook_entries', row: { id: badaPayoutId(bought), created_at: t, updated_at: t, direction: 'out', mode: 'bank', category: 'bhada',
+        party_name: 'P1', note: 'Bada · Rajneesh', amount_paise: 37000, business_date: day } },
+      { table: 'daybook_entries', row: { id: uuidv7(), created_at: t, updated_at: t, direction: 'out', mode: 'cash', category: 'supplier',
+        party_name: 'Ramu', note: '', amount_paise: 40000, business_date: day, purchase_bill: bought } },
+      // Not a Supplier Ledger payment (no gaadi): left out.
+      { table: 'daybook_entries', row: { id: uuidv7(), created_at: t, updated_at: t, direction: 'out', mode: 'cash', category: 'supplier',
+        party_name: 'Ramu', note: '', amount_paise: 999, business_date: day } },
+      { table: 'supplier_adjustments', row: { id: uuidv7(), created_at: t, updated_at: t, business_date: day, party_name: 'Ramu', kind: 'kaat', note: 'kharab',
+        truck_id: bought, amount_paise: 5000 } },
+    ] }).expect(200);
+    expect(pushed.body.results.every((r: any) => r.status === 'applied')).toBe(true);
+
+    const bhada = (await http().get(`${base}/nariyal/bhada?from=${day}&to=${day}`).set(w).expect(200)).body;
+    expect(bhada.rows).toHaveLength(2);
+    // 500 - 100 - 20 + 10 - 5 - 15 = 370: halting comes off.
+    expect(bhada.rows.find((r: any) => r.truckId === bought)).toMatchObject({ netPaise: 37000, paid: true, paidBy: 'Rajneesh', paidOn: day,
+      payout: { pot: 'bank', amountPaise: 37000, direction: 'out' }, dana: 100 });
+    expect(bhada.rows.find((r: any) => r.truckId === comm)).toMatchObject({ netPaise: 30000, paid: false, payout: null });
+    expect(bhada.totals).toMatchObject({ gaadis: 2, paidCount: 1, baakiCount: 1, bhadaPaise: 80000, netPaise: 67000, paidPaise: 37000, baakiPaise: 30000 });
+
+    const list = (await http().get(`${base}/nariyal/suppliers`).set(w).expect(200)).body.rows;
+    // Maal 1,000 (no bhada) less 400 paid less 50 kaat; the Commission gaadi has no beejak yet.
+    expect(list).toEqual([expect.objectContaining({ key: 'ramu', gaadis: 2, purchase: 1, commission: 1, duePaise: 55000 })]);
+
+    const led = (await http().get(`${base}/nariyal/suppliers/ramu/ledger?from=${day}&to=${day}`).set(w).expect(200)).body;
+    expect(led).toMatchObject({ name: expect.any(String), openingPaise: 0, closingPaise: 55000, duePaise: 55000,
+      totals: { creditPaise: 100000, debitPaise: 45000, paidPaise: 40000, adjustPaise: 5000, gaadis: 2, dana: 100 } });
+    expect(led.rows.map((r: any) => r.kind).sort()).toEqual(['gaadi', 'gaadi', 'kaat', 'payment']);
+    expect(led.rows.find((r: any) => r.id === bought).gaadi.lots).toEqual([{ maal: 'Calcutta', grade: 'I', qty: 100, ratePaise: 1000, amountPaise: 100000 }]);
+    // The next day: all of it is the opening.
+    const next = new Date(Date.parse(`${day}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+    expect((await http().get(`${base}/nariyal/suppliers/ramu/ledger?from=${next}&to=${next}`).set(w).expect(200)).body)
+      .toMatchObject({ openingPaise: 55000, closingPaise: 55000, rows: [] });
+    await http().get(`${base}/nariyal/suppliers/nobody/ledger?from=${day}&to=${day}`).set(w).expect(404);
+  });
+});
+
+describe('bank statement and reconciliation (partner)', () => {
+  const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
+  const shift = (iso: string, k: number) => new Date(Date.parse(`${iso}T00:00:00Z`) + k * 86_400_000).toISOString().slice(0, 10);
+  const dmy = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
+  async function portal(phone: string) {
+    await http().post('/v1/admin/auth/otp').send({ phone }).expect(204);
+    return auth((await http().post('/v1/admin/auth/verify').send({ phone, code: OtpService.issuedForTests.get(phone) }).expect(200)).body.token);
+  }
+
+  it('keeps a bank ledger per account, reads a CSV, matches by UTR and by amount + date, and lets a partner read and match but not edit', async () => {
+    const ownerPhone = '9845920001', partnerPhone = '9845920002';
+    const s = await login(ownerPhone);
+    const res = await createApproved(s.accessToken, { name: 'Bank Shop', mandi: 'Azadpur', shopNo: 'B-1', role: 'owner' });
+    const id = res.me.shop.id as string;
+    const base = `/v1/admin/shops/${id}`;
+    const w = await portal(ownerPhone);
+    const day = istDay();
+
+    await http().post(`${base}/settings`).set(w).send({ bankAccounts: [{ bank: 'HDFC', account: '5010 0123 456789', holder: 'Bank Shop' }] }).expect(200);
+    const acct = '50100123456789';
+    expect((await http().get(`${base}/bank`).set(w).expect(200)).body.accounts).toMatchObject([{ key: acct, bank: 'HDFC', opening: null }]);
+    await http().post(`${base}/bank/opening`).set(w).send({ account: 'nope', openingPaise: 0, openingOn: day }).expect(404);
+    await http().post(`${base}/bank/opening`).set(w).send({ account: acct, openingPaise: 100000_00, openingOn: shift(day, -3) }).expect(200);
+
+    // The app's side: a UPI raseed with its UTR, one with no bank picked (the shop has one account),
+    // a bank-mode kharcha, and a cash raseed that never reaches the bank.
+    const g = (await http().post(`${base}/entries/grahak`).set(w).send({ name: 'Raju' }).expect(201)).body;
+    await http().post(`${base}/entries/vasooli`).set(w).send({ buyerId: g.id, cashPaise: 0, upiPaise: 5000_00, upiBank: 'HDFC ··6789', paymentRef: '412345678901' }).expect(201);
+    await http().post(`${base}/entries/vasooli`).set(w).send({ buyerId: g.id, cashPaise: 0, upiPaise: 2500_00 }).expect(201);
+    await http().post(`${base}/entries/daybook`).set(w).send({ direction: 'out', category: 'kharcha', mode: 'bank', amountPaise: 300_00, note: 'bank charges' }).expect(201);
+    await http().post(`${base}/entries/vasooli`).set(w).send({ buyerId: g.id, cashPaise: 100_00, upiPaise: 0 }).expect(201);
+
+    const ledger = (await http().get(`${base}/bank/ledger?account=${acct}`).set(w).expect(200)).body;
+    expect(ledger).toMatchObject({ from: shift(day, -3), openingPaise: 100000_00, inPaise: 7500_00, outPaise: 300_00, closingPaise: 107200_00 });
+    expect(ledger.lines).toHaveLength(3);
+    expect(ledger.lines[ledger.lines.length - 1].balancePaise).toBe(107200_00);
+    expect(ledger.lines.every((l: any) => l.assumed === false)).toBe(true);
+
+    // A partner, put on the team from the website; the app never opens the shop for that number.
+    await http().post(`${base}/branch-team`).set(w).send({ phone: partnerPhone, name: 'Partner Ji', roles: { [id]: 'partner' } }).expect(200);
+    const team = (await http().get('/v1/shops/members').set(auth(res.accessToken)).expect(200)).body;
+    expect(team.members.find((m: any) => m.phone === partnerPhone)).toMatchObject({ role: 'partner' });
+    expect((await login(partnerPhone)).me.shop).toBeNull();
+    const pw = await portal(partnerPhone);
+    expect((await http().get('/v1/admin/me').set(pw).expect(200)).body).toMatchObject({ shopIds: [id], partnerShopIds: [id], labourShopIds: [] });
+
+    // The partner uploads the bank's CSV: preview finds the header under the account lines and guesses the columns.
+    const csv = [
+      'HDFC BANK Ltd.', 'Account No : 50100123456789', '',
+      'Date,Narration,Chq./Ref.No.,Value Dt,Withdrawal Amt.,Deposit Amt.,Closing Balance',
+      `${dmy(day)},UPI-RAJU-raju@okaxis-412345678901-PAYMENT,0000412345678901,${dmy(day)},,"5,000.00","1,05,000.00"`,
+      `${dmy(day)},NEFT-SOMEONE,N99,${dmy(day)},,999.00,"1,05,999.00"`,
+      `${dmy(day)},CHARGES,,${dmy(day)},250.00,,"1,05,749.00"`,
+      `${dmy(shift(day, 1))},UPI-RAJU-raju@okaxis-PAYMENT,,${dmy(shift(day, 1))},,"2,500.00","1,08,249.00"`,
+      'STATEMENT SUMMARY,,,,,,',
+    ].join('\r\n');
+    const pre = (await http().post(`${base}/bank/csv/preview`).set(pw).send({ text: csv }).expect(200)).body;
+    expect(pre).toMatchObject({ headerRow: 2, dateOrder: 'dmy', mapping: { date: 0, narration: 1, ref: 2, debit: 4, credit: 5, balance: 6 } });
+    const up = { account: acct, text: csv, fileName: 'hdfc.csv', headerRow: pre.headerRow, mapping: pre.mapping, dateOrder: pre.dateOrder };
+    expect((await http().post(`${base}/bank/csv/import`).set(pw).send(up).expect(201)).body).toMatchObject({ added: 4, duplicates: 0, skipped: 1 });
+    // The same statement again adds nothing.
+    expect((await http().post(`${base}/bank/csv/import`).set(pw).send(up).expect(201)).body).toMatchObject({ added: 0, duplicates: 4 });
+
+    const rec = async () => (await http().get(`${base}/bank/reconcile?account=${acct}&to=${shift(day, 1)}`).set(pw).expect(200)).body;
+    let r = await rec();
+    expect(r.counts).toEqual({ matched: 2, amountDiffers: 0, bankOnly: 2, appOnly: 1 });
+    expect(r.matched.map((m: any) => [m.how, m.line.amountPaise])).toEqual([['ref', 5000_00], ['amount', 2500_00]]);
+    expect(r.bankOnly.map((l: any) => l.amountPaise).sort()).toEqual([250_00, 999_00]);
+    expect(r.appOnly).toMatchObject([{ kind: 'daybook', direction: 'dr', amountPaise: 300_00 }]);
+    expect(r.statement).toMatchObject({ openingPaise: 100000_00, closingPaise: 108249_00 });
+    expect(r.app).toMatchObject({ openingPaise: 100000_00, closingPaise: 107200_00 });
+    expect(r.difference).toMatchObject({ openingPaise: 0, closingPaise: 1049_00 });
+
+    // A manual pair whose amounts differ shows under "amount differs".
+    const charges = r.bankOnly.find((l: any) => l.amountPaise === 250_00);
+    const kharcha = r.appOnly[0];
+    await http().post(`${base}/bank/match`).set(pw).send({ lineId: charges.id, entryKey: kharcha.key }).expect(204);
+    r = await rec();
+    expect(r.amountDiffers).toMatchObject([{ how: 'manual', diffPaise: 50_00, line: { id: charges.id }, entry: { key: kharcha.key } }]);
+
+    // Taking the automatic amount pair apart keeps it apart.
+    const auto = r.matched.find((m: any) => m.how === 'amount');
+    await http().post(`${base}/bank/unmatch`).set(pw).send({ lineId: auto.line.id, entryKey: auto.entry.key }).expect(204);
+    r = await rec();
+    expect(r.counts).toEqual({ matched: 1, amountDiffers: 1, bankOnly: 2, appOnly: 1 });
+    await http().post(`${base}/bank/match`).set(pw).send({ lineId: auto.line.id, entryKey: auto.entry.key }).expect(204);
+    expect((await rec()).counts).toMatchObject({ matched: 2 });
+
+    // Lines typed by hand, then one voided.
+    const typed = (await http().post(`${base}/bank/lines`).set(pw).send({ account: acct, lines: [{ date: day, direction: 'dr', amountPaise: 300_00, narration: 'typed' }] }).expect(201)).body;
+    expect(typed).toMatchObject({ added: 1 });
+    const typedLine = (await rec()).bankOnly.find((l: any) => l.narration === 'typed');
+    await http().post(`${base}/bank/lines/${typedLine.id}/void`).set(pw).expect(204);
+    expect((await rec()).bankOnly.some((l: any) => l.narration === 'typed')).toBe(false);
+
+    // The partner reads the books but cannot write or change them.
+    await http().get(`${base}/daybook?from=${day}&to=${day}`).set(pw).expect(200);
+    await http().get(`${base}/cashbook?pot=bank&from=${day}&to=${day}`).set(pw).expect(200);
+    await http().get(`${base}/bank/ledger?account=${acct}`).set(pw).expect(200);
+    await http().post(`${base}/entries/vasooli`).set(pw).send({ buyerId: g.id, cashPaise: 100_00, upiPaise: 0 }).expect(403);
+    await http().post(`${base}/entries/daybook`).set(pw).send({ direction: 'out', category: 'kharcha', mode: 'cash', amountPaise: 100 }).expect(403);
+    await http().post(`${base}/settings`).set(pw).send({ name: 'Partner Shop' }).expect(403);
+    await http().post(`${base}/branch-team`).set(pw).send({ phone: '9845920009', roles: { [id]: 'accountant' } }).expect(403);
+    const col = r.matched.find((m: any) => m.how === 'ref').entry.key.slice(4);
+    await http().post(`${base}/collections/${col}/void`).set(pw).send({}).expect(403);
+  });
+});
+
+describe('website matches the app (part payment, late refund)', () => {
+  const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const lateNote = (slipNo: number, d: string) => `Parchi #${slipNo} refund (${d.slice(8, 10)} ${months[Number(d.slice(5, 7)) - 1]} ki)`;
+
+  async function shopWithWeb(phone: string, name: string) {
+    const res = await registerShop(phone, name);
+    await http().post('/v1/admin/auth/otp').send({ phone }).expect(204);
+    const web = auth((await http().post('/v1/admin/auth/verify').send({ phone, code: OtpService.issuedForTests.get(phone) }).expect(200)).body.token);
+    const term = auth(res.accessToken);
+    const push = async (items: object[]) => {
+      const r = (await http().post('/v1/sync/push').set(term).send({ items }).expect(200)).body.results as any[];
+      expect(r.map((x) => x.status)).toEqual(items.map(() => 'applied'));
+    };
+    return { base: `/v1/admin/shops/${res.me.shop.id}`, web, push };
+  }
+
+  it('shows a part-paid slip as Parchi / mila / baaki in Outstanding, without touching the cash book', async () => {
+    const t = now();
+    const d = istDay();
+    const { base, web, push } = await shopWithWeb('9877911001', 'Part Pay');
+    const raju = uuidv7(), billId = uuidv7();
+    await push([
+      { table: 'buyers', row: { id: raju, created_at: t, updated_at: t, name: 'Raju', phone: '9877911091', kind: '', credit_limit_paise: 0, vehicle: '', address: '', destination: '' } },
+      // ₹30,000 parchi, ₹15,000 paid at the counter in cash.
+      { table: 'bills', row: { id: billId, created_at: t, number: 'P1/2627/000001', kind: 'kachchi', buyer_id: raju, buyer_name: 'Raju', business_date: d,
+        pay_mode: 'cash', total_paise: 3000000, paid_paise: 1500000, cash_paise: 1500000, slip_no: 1 } },
+    ]);
+    const row = async () => (await http().get(`${base}/outstanding`).set(web).expect(200)).body.rows.find((r: any) => r.buyerId === raju);
+    let r = await row();
+    expect(r).toMatchObject({ duePaise: 1500000, billedPaise: 3000000, receivedPaise: 1500000 });
+    expect(r.slips).toEqual([{ billId, slipNo: 1, date: d, totalPaise: 3000000, paidAtCounterPaise: 1500000, collectedOnSlipPaise: 0, receivedPaise: 1500000, openPaise: 1500000 }]);
+    // ₹5,000 vasooli on that slip: 20,000 in, 10,000 left.
+    await push([{ table: 'collections', row: { id: uuidv7(), created_at: t, buyer_id: raju, amount_paise: 500000, pay_mode: 'cash', payment_ref: '',
+      business_date: d, bill_id: billId, receipt_no: 1, cash_paise: 500000, upi_paise: 0 } }]);
+    r = await row();
+    expect(r).toMatchObject({ duePaise: 1000000, billedPaise: 3000000, receivedPaise: 2000000 });
+    expect(r.slips[0]).toMatchObject({ totalPaise: 3000000, paidAtCounterPaise: 1500000, collectedOnSlipPaise: 500000, receivedPaise: 2000000, openPaise: 1000000 });
+    // Money without a slip settles it too (oldest first).
+    await push([{ table: 'collections', row: { id: uuidv7(), created_at: t, buyer_id: raju, amount_paise: 100000, pay_mode: 'upi', payment_ref: '',
+      business_date: d, bill_id: null, receipt_no: 2, cash_paise: 0, upi_paise: 100000 } }]);
+    expect((await row()).slips[0]).toMatchObject({ receivedPaise: 2100000, openPaise: 900000 });
+    // The galla counts the counter cash as sale and the vasooli as vasooli, once each.
+    const galla = (await http().get(`${base}/cashbook?pot=galla&from=${d}&to=${d}`).set(web).expect(200)).body;
+    expect(galla.lines.map((l: any) => [l.kind, l.inPaise])).toEqual([['bikri', 1500000], ['vasooli', 500000]]);
+    expect(galla.inPaise).toBe(2000000);
+  });
+
+  it('keeps a parchi refunded after its day in that day, and shows the refund going out today', async () => {
+    const t = now();
+    const d = istDay();
+    const yesterday = new Date(Date.parse(d) - 86_400_000).toISOString().slice(0, 10);
+    const { base, web, push } = await shopWithWeb('9877911002', 'Late Refund');
+    const raju = uuidv7(), appBill = uuidv7(), webBill = uuidv7(), col = uuidv7();
+    await push([
+      { table: 'buyers', row: { id: raju, created_at: t, updated_at: t, name: 'Raju', phone: '9877911092', kind: '', credit_limit_paise: 0, vehicle: '', address: '', destination: '' } },
+      // Yesterday: #1 ₹1,000 (₹600 cash + ₹200 UPI, ₹200 udhaar later paid in cash), and #2 ₹500 cash.
+      { table: 'bills', row: { id: appBill, created_at: t, number: 'L1/2627/000001', kind: 'kachchi', buyer_id: raju, buyer_name: 'Raju', business_date: yesterday,
+        pay_mode: 'mixed', total_paise: 100000, paid_paise: 80000, cash_paise: 60000, upi_paise: 20000, slip_no: 1 } },
+      { table: 'collections', row: { id: col, created_at: t, buyer_id: raju, amount_paise: 20000, pay_mode: 'cash', payment_ref: '',
+        business_date: yesterday, bill_id: appBill, receipt_no: 1, cash_paise: 20000, upi_paise: 0 } },
+      { table: 'bills', row: { id: webBill, created_at: t, number: 'L1/2627/000002', kind: 'kachchi', buyer_name: 'Cash', business_date: yesterday,
+        pay_mode: 'cash', total_paise: 50000, paid_paise: 50000, cash_paise: 50000, slip_no: 2 } },
+    ]);
+    const book = async (pot: string, day: string) => (await http().get(`${base}/cashbook?pot=${pot}&from=${day}&to=${day}`).set(web).expect(200)).body;
+    const dash = async (day: string) => (await http().get(`${base}/dashboard?from=${day}&to=${day}`).set(web).expect(200)).body.now;
+    const before = { galla: await book('galla', yesterday), bank: await book('bank', yesterday), dash: await dash(yesterday) };
+    expect(before.dash).toMatchObject({ salesPaise: 150000, slips: 2, cashPaise: 110000, upiPaise: 20000 });
+
+    // #1 refunded today on the app: its raseed cancelled, cash and UPI out of today by the late-refund lines, then the void.
+    const v = new Date().toISOString();
+    await push([
+      { table: 'collection_voids', row: { id: uuidv7(), created_at: v, collection_id: col, receipt_no: 1, reason: 'deleted' } },
+      { table: 'daybook_entries', row: { id: uuidv7(), created_at: v, updated_at: v, direction: 'out', mode: 'cash', category: 'aur_gaya', party_name: 'Raju',
+        note: lateNote(1, yesterday), amount_paise: 80000, business_date: d } },
+      { table: 'daybook_entries', row: { id: uuidv7(), created_at: v, updated_at: v, direction: 'out', mode: 'upi', category: 'aur_gaya', party_name: 'Raju',
+        note: lateNote(1, yesterday), amount_paise: 20000, business_date: d } },
+      { table: 'bill_voids', row: { id: uuidv7(), created_at: v, bill_id: appBill, slip_no: 1, reason: 'refunded' } },
+    ]);
+    // #2 refunded today on the website: the portal books its own late-refund line.
+    expect((await http().post(`${base}/bills/${webBill}/void`).set(web).send({ reason: 'refunded' }).expect(200)).body).toMatchObject({ late: true, refundPaise: 50000 });
+
+    // Yesterday is as it was: the sale, the counter money, the vasooli on #1.
+    expect(await dash(yesterday)).toMatchObject({ salesPaise: 150000, slips: 2, cashPaise: 110000, upiPaise: 20000, udhaarPaise: 0 });
+    for (const pot of ['galla', 'bank'] as const) {
+      const after = await book(pot, yesterday);
+      expect(after.lines.map((l: any) => [l.kind, l.inPaise, l.outPaise])).toEqual(before[pot].lines.map((l: any) => [l.kind, l.inPaise, l.outPaise]));
+      expect(after.closingPaise).toBe(before[pot].closingPaise);
+    }
+    const dayBook = (await http().get(`${base}/daybook?from=${yesterday}&to=${yesterday}`).set(web).expect(200)).body.entries as any[];
+    expect(dayBook.filter((e) => e.kind === 'slip').map((e) => [e.title, e.voided, e.lateRefund, e.udhaarPaise]).sort())
+      .toEqual([['Parchi 1', null, true, 0], ['Parchi 2', null, true, 0]]);
+    expect(dayBook.find((e) => e.kind === 'payment')).toMatchObject({ amountPaise: 20000, voided: null });
+    // Today: the money goes out by the refund lines (cash from the galla, UPI from the bank).
+    const galla = await book('galla', d), bank = await book('bank', d);
+    expect(galla.lines.map((l: any) => [l.kind, l.note, l.outPaise]).sort()).toEqual([['out', lateNote(1, yesterday), 80000], ['out', lateNote(2, yesterday), 50000]]);
+    expect(bank.lines.map((l: any) => [l.kind, l.note, l.outPaise])).toEqual([['out', lateNote(1, yesterday), 20000]]);
+    expect(galla.openingPaise).toBe(before.galla.closingPaise);
+    // Nothing is owed on a refunded slip.
+    expect((await http().get(`${base}/outstanding`).set(web).expect(200)).body.rows.find((r: any) => r.buyerId === raju)).toBeUndefined();
+
+  });
+});
+
+describe('walk-in udhaar', () => {
+  const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
+  it('refuses a parchi left on udhaar for the walk-in Cash or Bank, on a new slip and an edit; Free and paid slips go', async () => {
+    const shop = await registerShop('9811122201', 'Walk In Traders');
+    const id = shop.me.shop.id as string;
+    const t = new Date().toISOString();
+    const brandId = uuidv7(), truckId = uuidv7(), raju = uuidv7();
+    await http().post('/v1/sync/push').set(auth(shop.accessToken)).send({ items: [
+      { table: 'brands', row: { id: brandId, created_at: t, updated_at: t, name: 'Pollachi' } },
+      { table: 'buyers', row: { id: raju, created_at: t, updated_at: t, name: 'Raju Fruits', phone: '9876500001' } },
+      { table: 'trucks', row: { id: truckId, created_at: t, updated_at: t, number: 'TN09', supplier: 'Mani', arrived_at: t } },
+      { table: 'truck_grades', row: { id: uuidv7(), created_at: t, truck_id: truckId, brand_id: brandId, grade: '1', billed_qty: 500, received_qty: 500, rate_paise: 2000 } },
+    ] }).expect(200);
+    await http().post('/v1/admin/auth/otp').send({ phone: '9811122201' }).expect(204);
+    const web = auth((await http().post('/v1/admin/auth/verify').send({ phone: '9811122201', code: OtpService.issuedForTests.get('9811122201') }).expect(200)).body.token);
+    const base = `/v1/admin/shops/${id}`;
+    const slip = (body: object) => http().post(`${base}/entries/parchi`).set(web).send({ truckId, lines: [{ grade: '1', qty: 4, ratePaise: 2500 }], packing: 'loose', ...body });
+    const msg = 'Udhaar sirf grahak ke naam par: naam likhein ya poora paisa lein';
+
+    // Udhaar, Paise ke baad, and part paid: all refused on Cash and Bank, whatever the case.
+    expect((await slip({ buyerName: 'Cash', pay: 'credit' }).expect(422)).body.message).toBe(msg);
+    expect((await slip({ buyerName: 'bank', pay: 'after' }).expect(422)).body.message).toBe(msg);
+    expect((await slip({ buyerName: 'Bank', pay: 'split', cashPaise: 0, upiPaise: 5000 }).expect(422)).body.message).toBe(msg);
+    // Paid in full, Free, or udhaar on a real grahak: saved.
+    const paid = (await slip({ buyerName: 'Cash', pay: 'split', cashPaise: 6000, upiPaise: 4000 }).expect(201)).body;
+    await slip({ buyerName: 'Bank', pay: 'upi' }).expect(201);
+    await slip({ buyerName: 'Free', pay: 'free' }).expect(201);
+    await slip({ buyerId: raju, pay: 'credit' }).expect(201);
+    // Round rupees taken at the counter: short by less than Re 1 is paid, not udhaar (live books hold
+    // such slips); short by Re 1 or more is refused.
+    const roundOff = (await slip({ buyerName: 'Cash', pay: 'split', cashPaise: 9960, upiPaise: 0 }).expect(201)).body;
+    expect(roundOff.billId).toBeTruthy();
+    expect((await slip({ buyerName: 'Cash', pay: 'split', cashPaise: 9900, upiPaise: 0 }).expect(422)).body.message).toBe(msg);
+    // An edit can't turn a walk-in's paid slip into udhaar either; naming a grahak can.
+    expect((await http().post(`${base}/bills/${paid.billId}/edit`).set(web)
+      .send({ buyerName: 'Cash', truckId, lines: [{ grade: '1', qty: 4, ratePaise: 2500 }], packing: 'loose', pay: 'credit' }).expect(422)).body.message).toBe(msg);
+    await http().post(`${base}/bills/${paid.billId}/edit`).set(web)
+      .send({ buyerId: raju, truckId, lines: [{ grade: '1', qty: 4, ratePaise: 2500 }], packing: 'loose', pay: 'credit' }).expect(201);
+  });
+});
+
+describe('grahak jama', () => {
+  const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
+  it('lists the grahak the shop owes, biggest jama first, with the balance their khata shows', async () => {
+    const shop = await registerShop('9811122202', 'Jama Traders');
+    const id = shop.me.shop.id as string;
+    const t = new Date().toISOString();
+    const brandId = uuidv7(), truckId = uuidv7(), asha = uuidv7(), bablu = uuidv7(), chotu = uuidv7();
+    await http().post('/v1/sync/push').set(auth(shop.accessToken)).send({ items: [
+      { table: 'brands', row: { id: brandId, created_at: t, updated_at: t, name: 'Pollachi' } },
+      { table: 'buyers', row: { id: asha, created_at: t, updated_at: t, name: 'Asha' } },
+      { table: 'buyers', row: { id: bablu, created_at: t, updated_at: t, name: 'Bablu' } },
+      { table: 'buyers', row: { id: chotu, created_at: t, updated_at: t, name: 'Chotu' } },
+      { table: 'trucks', row: { id: truckId, created_at: t, updated_at: t, number: 'TN09', supplier: 'Mani', arrived_at: t } },
+      { table: 'truck_grades', row: { id: uuidv7(), created_at: t, truck_id: truckId, brand_id: brandId, grade: '1', billed_qty: 500, received_qty: 500, rate_paise: 2000 } },
+    ] }).expect(200);
+    await http().post('/v1/admin/auth/otp').send({ phone: '9811122202' }).expect(204);
+    const web = auth((await http().post('/v1/admin/auth/verify').send({ phone: '9811122202', code: OtpService.issuedForTests.get('9811122202') }).expect(200)).body.token);
+    const base = `/v1/admin/shops/${id}`;
+    // Asha pays 3,000 ahead and buys 909 on udhaar: 2,091 jama. Bablu pays 500 ahead: 500 jama.
+    // Chotu buys 1,000 on udhaar: baaki, not on the list.
+    await http().post(`${base}/entries/vasooli`).set(web).send({ buyerId: asha, cashPaise: 300000, upiPaise: 0 }).expect(201);
+    await http().post(`${base}/entries/parchi`).set(web).send({ buyerId: asha, truckId, lines: [{ grade: '1', qty: 1, ratePaise: 90900 }], pay: 'credit', packing: 'loose', labour: false }).expect(201);
+    await http().post(`${base}/entries/vasooli`).set(web).send({ buyerId: bablu, cashPaise: 50000, upiPaise: 0 }).expect(201);
+    await http().post(`${base}/entries/parchi`).set(web).send({ buyerId: chotu, truckId, lines: [{ grade: '1', qty: 1, ratePaise: 100000 }], pay: 'credit', packing: 'loose', labour: false }).expect(201);
+
+    const list = (await http().get(`${base}/buyers?all=1&jama=1`).set(web).expect(200)).body.buyers as any[];
+    expect(list.map((b) => [b.name, b.balancePaise])).toEqual([['Asha', -209100], ['Bablu', -50000]]);
+    // The same number the khata page shows.
+    for (const b of list) expect((await http().get(`${base}/buyers/${b.id}`).set(web).expect(200)).body.totals.balancePaise).toBe(b.balancePaise);
+    // The full list still has everyone.
+    expect(((await http().get(`${base}/buyers?all=1`).set(web).expect(200)).body.buyers as any[]).length).toBe(3);
+
+    // Day Book: Asha's 909 udhaar came off the 3,000 she gave before it ("Jama se kata").
+    // A 2,500 slip next takes only the 2,091 left; the 409 she pays after it doesn't count.
+    const big = (await http().post(`${base}/entries/parchi`).set(web).send({ buyerId: asha, truckId, lines: [{ grade: '1', qty: 1, ratePaise: 250000 }], pay: 'credit', packing: 'loose', labour: false }).expect(201)).body;
+    await http().post(`${base}/entries/vasooli`).set(web).send({ buyerId: asha, cashPaise: 40900, upiPaise: 0 }).expect(201);
+    const d = istDay();
+    const day = (await http().get(`${base}/daybook?from=${d}&to=${d}`).set(web).expect(200)).body.entries as any[];
+    const slips = day.filter((e) => e.kind === 'slip').map((e) => [e.party, e.udhaarPaise, e.jamaPaise]).reverse();
+    expect(slips).toEqual([['Asha', 90900, 90900], ['Chotu', 100000, 0], ['Asha', 250000, 209100]]);
+    expect(day.find((e) => e.id === big.billId).jamaPaise).toBe(209100);
   });
 });

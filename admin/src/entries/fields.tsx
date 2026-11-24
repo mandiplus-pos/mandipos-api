@@ -58,7 +58,7 @@ export function Money({ value, onChange, autoFocus, placeholder = '0', selectOnF
   )
 }
 
-export function Seg<T extends string>({ value, options, onChange }: { value: T; options: { key: T; label: string }[]; onChange: (v: T) => void }) {
+export function Seg<T extends string>({ value, options, onChange }: { value: T | null; options: { key: T; label: string }[]; onChange: (v: T) => void }) {
   return (
     <div className="seg wide" role="group">
       {options.map((o) => <button type="button" key={o.key} aria-pressed={value === o.key} onClick={() => onChange(o.key)}>{o.label}</button>)}
@@ -68,9 +68,53 @@ export function Seg<T extends string>({ value, options, onChange }: { value: T; 
 
 export type PickedBuyer = { id: string | null; name: string; balancePaise?: number; address?: string; destination?: string; sub?: string }
 
+/** How a parchi is paid; 'split' is part cash / part UPI with the rest on udhaar, 'after' is udhaar with the maal held till paid. */
+export type Pay = 'cash' | 'upi' | 'credit' | 'split' | 'after' | 'free'
+
+/** The mode a name picks on its own: the walk-in Cash pays cash, Bank pays UPI, a grahak of the shop goes on udhaar. */
+export function payForBuyer(b: PickedBuyer | null | undefined): Pay | null {
+  if (!b) return null
+  if (b.id) return 'credit'
+  const name = b.name.trim().toLowerCase()
+  return name === 'cash' ? 'cash' : name === 'bank' ? 'upi' : null
+}
+
+/**
+ * A parchi's payment mode, as on the app's parchi screen: compulsory, with no default, so a slip
+ * never goes out as cash only because nobody changed it. Picking the walk-in Cash or Bank sets
+ * Cash or UPI; picking a grahak sets Udhaar unless a mode was already tapped; a new name or a
+ * cleared one leaves it to be tapped. A tap always wins until the name changes again. [chosen]:
+ * the slip already has a mode (one being corrected, or a spoken slip that said it).
+ */
+export function usePayMode(initial: Pay | null, chosen: boolean) {
+  const [pay, setPayState] = useState<Pay | null>(initial)
+  const tapped = useRef(chosen && initial !== null)
+  const setPay = (p: Pay) => { tapped.current = true; setPayState(p) }
+  const followBuyer = (b: PickedBuyer | null) => {
+    const own = payForBuyer(b)
+    if (own === 'cash' || own === 'upi') { tapped.current = false; setPayState(own) }
+    else if (!tapped.current) setPayState(own)
+  }
+  return { pay, setPay, followBuyer }
+}
+
 /** The counter's walk-ins, first in the list as on the parchi screen: no khata, paid there and then. */
 export const WALK_INS = ['Cash', 'Bank'] as const
 export const isWalkInName = (name: string) => WALK_INS.some((w) => w.toLowerCase() === name.trim().toLowerCase())
+/** Said when a parchi left on udhaar names the walk-in Cash or Bank, as the app's parchi screen says it. */
+export const WALK_IN_UDHAAR = 'Udhaar sirf grahak ke naam par: naam likhein ya poora paisa lein'
+/**
+ * Why a parchi that leaves udhaar can't be saved, or null when it can: udhaar needs a grahak,
+ * and the walk-in Cash or Bank is nobody's khata (Free is exempt; it has no money on it).
+ */
+export function udhaarBuyerError(buyer: PickedBuyer | null, leavesUdhaar: boolean, shortPaise?: number): string | null {
+  if (!leavesUdhaar) return null
+  if (!buyer || !buyer.name.trim()) return t('Udhaar ke liye grahak chunein')
+  // A walk-in part-paid in round rupees (Rs 3,830 for Rs 3,830.40) is paid, not udhaar: same slack as the API.
+  if (isWalkInName(buyer.name) && shortPaise !== undefined && shortPaise < 100) return null
+  if (isWalkInName(buyer.name)) return t(WALK_IN_UDHAAR)
+  return null
+}
 const walkInLabel = (name: string) => (name === 'Bank' ? t('Bank (UPI)') : t('Cash grahak'))
 
 /**

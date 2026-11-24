@@ -64,12 +64,12 @@ export function Team({ shopId }: { shopId: string }) {
   )
 }
 
-type Role = 'admin' | 'accountant' | 'labour'
+type Role = 'admin' | 'accountant' | 'labour' | 'partner'
 type BranchTeam = {
   branches: { id: string; name: string; nickname: string; mandi: string }[]
   people: { userId: string; phone: string; name: string; roles: Record<string, Role>; lastSeenAt: string | null }[]
 }
-const ROLES: { v: Role | ''; label: string }[] = [{ v: '', label: '—' }, { v: 'admin', label: 'Malik' }, { v: 'accountant', label: 'Munim' }, { v: 'labour', label: 'Labour' }]
+const ROLES: { v: Role | ''; label: string }[] = [{ v: '', label: '—' }, { v: 'admin', label: 'Malik' }, { v: 'accountant', label: 'Munim' }, { v: 'labour', label: 'Labour' }, { v: 'partner', label: 'Partner' }]
 
 /**
  * Who works at which branch: the owner puts a number on one branch, several, or takes it off.
@@ -82,7 +82,8 @@ function BranchStaff({ shopId }: { shopId: string }) {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const [add, setAdd] = useState<{ phone: string; name: string; roles: Record<string, Role | ''> }>({ phone: '', name: '', roles: { [shopId]: 'accountant' } })
-  const mayEdit = (id: string) => !!me?.admin || !!me?.shopIds?.includes(id)
+  // A partner reads the team but changes nothing in it.
+  const mayEdit = (id: string) => !!me?.admin || (!!me?.shopIds?.includes(id) && !me?.partnerShopIds?.includes(id))
   const send = async (phoneNo: string, name: string, roles: Record<string, Role | null>) => {
     setBusy(true); setMsg('')
     try { await api(`/v1/admin/shops/${shopId}/branch-team`, { method: 'POST', body: { phone: phoneNo, name, roles } }); setTick((n) => n + 1); return true }
@@ -136,7 +137,7 @@ function BranchStaff({ shopId }: { shopId: string }) {
         </tbody>
       </table>
       <div className="hd" style={{ borderTop: '1px solid var(--line)' }}>
-        {msg ? <span className="error" style={{ margin: 0 }}>{msg}</span> : <span className="muted">{many ? t('Har number apne OTP se login karta hai; do branch wala Meri dukaanein se badalta hai') : ''}</span>}
+        {msg ? <span className="error" style={{ margin: 0 }}>{msg}</span> : <span className="muted">{many ? t('Har number apne OTP se login karta hai; do branch wala Meri dukaanein se badalta hai') : t('Partner sirf website par: hisab dekhta hai aur bank statement chadhata hai')}</span>}
         <button type="button" className="btn" disabled={busy || !okPhone || !Object.keys(addRoles).length}
           onClick={async () => { if (await send(add.phone, add.name.trim(), addRoles)) setAdd({ phone: '', name: '', roles: { [shopId]: 'accountant' } }) }}>{t('Jodein')}</button>
       </div>

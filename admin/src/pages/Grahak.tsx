@@ -14,28 +14,46 @@ import { GrahakCrates } from './CrateStore'
 import { isCheeku } from '../commodity'
 import { CHEEKU_CAPS_NAMES, CHEEKU_LEDGER_GRADES } from '../cheeku'
 
-/** Every grahak of the shop, searchable; biggest baaki first. Enter opens the khata. */
+/**
+ * Every grahak of the shop, searchable; biggest baaki first. Enter opens the khata. The
+ * "Jama (advance)" tab lists only those the shop owes (paid more than they bought), biggest
+ * jama first, with the kul jama: the same balance the grahak's khata shows.
+ */
 export function GrahakList({ shopId }: { shopId: string }) {
   const [q, setQ] = useState('')
   const [query, setQuery] = useState('')
   const [area, setArea] = useState(() => hashQuery().get('area') ?? '')
+  const [jama, setJama] = useState(() => hashQuery().get('view') === 'jama')
   const [areas, setAreas] = useState<string[]>([])
   useEffect(() => { const t = setTimeout(() => setQuery(q.trim()), 250); return () => clearTimeout(t) }, [q])
   useEffect(() => { api<{ areas: { name: string }[] }>(`/v1/admin/shops/${shopId}/areas`).then((r) => setAreas(r.areas.map((a) => a.name))).catch(() => {}) }, [shopId])
   const { data, error, loading } = useLoad(
-    () => api<{ buyers: BuyerRow[] }>(`/v1/admin/shops/${shopId}/buyers?all=1&q=${encodeURIComponent(query)}&area=${encodeURIComponent(area)}`).then((r) => r.buyers), [shopId, query, area])
-  const pickArea = (a: string) => { setArea(a); setHashQuery(a ? { area: a } : {}) }
+    () => api<{ buyers: BuyerRow[] }>(`/v1/admin/shops/${shopId}/buyers?all=1&q=${encodeURIComponent(query)}&area=${encodeURIComponent(area)}${jama ? '&jama=1' : ''}`).then((r) => r.buyers), [shopId, query, area, jama])
+  const keepHash = (a: string, j: boolean) => setHashQuery({ ...(a ? { area: a } : {}), ...(j ? { view: 'jama' } : {}) })
+  const pickArea = (a: string) => { setArea(a); keepHash(a, jama) }
+  const pickJama = (j: boolean) => { setJama(j); keepHash(area, j) }
+  // A jama balance is negative (the shop owes it); shown as a plain amount on the Jama tab.
+  const kulJama = jama && data ? data.reduce((s, b) => s - Math.min(0, b.balancePaise), 0) : 0
 
-  useExport(data ? () => ({
+  useExport(data ? () => jama ? ({
+    style: 'book' as const, title: `${t('Jama (advance)')}${area ? ` · ${area}` : ''}`, file: fileName(t('Jama (advance)'), area || undefined),
+    columns: [{ label: t('Code') }, { label: t('Grahak'), wide: true }, { label: t('Mobile') }, { label: t('Aakhri parchi') }, { label: t('Jama'), num: true }],
+    rows: data.map((b) => ({ cells: [b.code, b.name, b.phone ? phone(b.phone) : '', b.lastSlipOn ? dmy(b.lastSlipOn) : '—', rs(-b.balancePaise)] })),
+    foot: ['', t('Kul jama'), '', '', rs(kulJama)],
+  }) : ({
     style: 'book' as const, title: area ? `${t('Grahak Ledger')} · ${area}` : t('Grahak Ledger'), file: fileName(t('Grahak Ledger'), area || undefined),
     columns: [{ label: t('Code') }, { label: t('Grahak'), wide: true }, { label: t('Mobile') }, { label: t('Kharida'), num: true }, { label: t('Aakhri parchi') }, { label: t('Baaki'), num: true }],
     rows: data.map((b) => ({ cells: [b.code, b.name, b.phone ? phone(b.phone) : '', rs(b.boughtPaise), b.lastSlipOn ? dmy(b.lastSlipOn) : '—', balRs(b.balancePaise)] })),
     foot: ['', t('Kul'), '', rs(data.reduce((s, b) => s + b.boughtPaise, 0)), '', balRs(data.reduce((s, b) => s + b.balancePaise, 0))],
-  }) : null, [data, area])
+  }) : null, [data, area, jama])
 
   return (
     <>
       <div className="toolbar">
+        <div className="seg" role="group" aria-label={t('Filter')}>
+          <button aria-pressed={!jama} onClick={() => pickJama(false)}>{t('Sab grahak')}</button>
+          <button aria-pressed={jama} onClick={() => pickJama(true)}>{t('Jama (advance)')}</button>
+        </div>
         <input className="field grow" data-search type="search" placeholder={t('Naam, mobile ya code')} value={q} autoFocus onChange={(e) => setQ(e.target.value)} />
         {(areas.length > 0 || area) && (
           <select className="field" aria-label={t('Area')} style={{ flex: '0 1 180px' }} value={area} onChange={(e) => pickArea(e.target.value)}>
@@ -45,7 +63,33 @@ export function GrahakList({ shopId }: { shopId: string }) {
         )}
       </div>
       {error && <p className="error">{error}</p>}
-      {!data ? <Skeleton /> : (
+      {!data ? <Skeleton /> : jama ? (
+        <div className={`stack${loading ? ' dim' : ''}`}>
+          <div className="card sum">
+            <div><span className="lb">{t('Kul jama')}</span><span className="v jama">{rupees(kulJama)}</span></div>
+            <div><span className="lb">{t('Grahak')}</span><span className="v">{count(data.length)}</span></div>
+          </div>
+          <div className="card wrap-x">
+            <table className="tbl fold">
+              <thead><tr><th>{t('Code')}</th><th>{t('Grahak')}</th><th>{t('Mobile')}</th><th>{t('Aakhri parchi')}</th><th className="num">{t('Jama')}</th></tr></thead>
+              <tbody>
+                {data.map((b) => (
+                  <tr key={b.id} data-row tabIndex={0} onClick={() => { location.hash = href({ page: 'grahak', shopId, buyerId: b.id }) }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') location.hash = href({ page: 'grahak', shopId, buyerId: b.id }) }}>
+                    <td className="code-col">{b.code ? <span className="code">{b.code}</span> : null}</td>
+                    <td className="main-col"><b>{b.name}</b><small>{b.hidden ? t('Chhupa hua') : ''}<span className="show-sm">{b.phone ? phone(b.phone) : ''}</span></small></td>
+                    <td className="opt-col muted">{b.phone ? phone(b.phone) : '—'}</td>
+                    <td className="opt-col muted">{b.lastSlipOn ? shortDate(b.lastSlipOn) : '—'}</td>
+                    <td className="num amt-col"><Bal paise={b.balancePaise} /></td>
+                  </tr>
+                ))}
+              </tbody>
+              {data.length > 0 && <tfoot><tr><td></td><td><b>{t('Kul jama')}</b></td><td className="opt-col"></td><td className="opt-col"></td><td className="num amt-col"><span className="money b jama">{rupees(kulJama)}</span></td></tr></tfoot>}
+            </table>
+            {data.length === 0 && <p className="empty">{t('Kisi grahak ka jama nahi')}</p>}
+          </div>
+        </div>
+      ) : (
         <div className={`card wrap-x${loading ? ' dim' : ''}`}>
           <table className="tbl fold">
             <thead><tr><th>{t('Code')}</th><th>{t('Grahak')}</th><th>{t('Mobile')}</th><th className="num">{t('Kharida')}</th><th>{t('Aakhri parchi')}</th><th className="num">{t('Baaki')}</th></tr></thead>

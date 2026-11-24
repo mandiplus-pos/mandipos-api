@@ -24,6 +24,7 @@ import { ColdStoreService } from './cold-store.service';
 import { BooksService } from './books.service';
 import { CN_REASONS, VouchersService } from './vouchers.service';
 import { GSTIN, InvoicesService } from './invoices.service';
+import { NariyalHisabService } from './nariyal-hisab.service';
 import { UdhaarAlertsService } from '../alerts/udhaar-alerts.service';
 import { PortalTurnBody, PortalVoiceService } from '../voice/portal-voice.service';
 import { RemindersService } from '../alerts/reminders.service';
@@ -41,18 +42,31 @@ const TTL_SECONDS = 12 * 60 * 60;
  * sees only the approved shops they own. Read on every request, so taking someone off a shop or
  * off the admin list locks them out at once — the token only says which phone signed in.
  */
-export type Viewer = { phone: string; admin: boolean; shopIds: string[]; labourShopIds: string[] };
+export type Viewer = { phone: string; admin: boolean; shopIds: string[]; labourShopIds: string[]; partnerShopIds: string[] };
 type PortalRequest = Request & { viewer?: Viewer };
 
 async function viewerFor(db: Db, phoneNo: string): Promise<Viewer | null> {
-  if (adminPhones().includes(phoneNo)) return { phone: phoneNo, admin: true, shopIds: [], labourShopIds: [] };
+  if (adminPhones().includes(phoneNo)) return { phone: phoneNo, admin: true, shopIds: [], labourShopIds: [], partnerShopIds: [] };
   const rows = await db.query<{ id: string; role: string }>(
     `SELECT s.id, m.role FROM shop_members m JOIN users u ON u.id = m.user_id JOIN shops s ON s.id = m.shop_id
-     WHERE u.phone = $1 AND m.role IN ('owner', 'labour') AND s.approved_at IS NOT NULL ORDER BY s.created_at`, [phoneNo]);
+     WHERE u.phone = $1 AND m.role IN ('owner', 'labour', 'partner') AND s.approved_at IS NOT NULL ORDER BY s.created_at`, [phoneNo]);
   return rows.length
-    ? { phone: phoneNo, admin: false, shopIds: rows.map((r) => r.id), labourShopIds: rows.filter((r) => r.role === 'labour').map((r) => r.id) }
+    ? {
+      phone: phoneNo, admin: false, shopIds: rows.map((r) => r.id), labourShopIds: rows.filter((r) => r.role === 'labour').map((r) => r.id),
+      partnerShopIds: rows.filter((r) => r.role === 'partner').map((r) => r.id),
+    }
     : null;
 }
+
+/**
+ * A partner login (migration 090) reads every page (any GET) and may write only here: the bank
+ * statement upload, its matching and the account openings (bank.controller.ts), plus the two
+ * read-only POSTs that fetch documents. No entry, edit, delete, setting or team change.
+ */
+const PARTNER_HANDLERS = new Set([
+  'bankSetOpening', 'bankCsvPreview', 'bankCsvImport', 'bankAddLines', 'bankVoidLine', 'bankVoidBatch', 'bankMatch', 'bankUnmatch',
+  'invoiceDocs', 'khatas',
+]);
 
 /** All a labour login may do on the website, as in the app: scan slips, hand boxes over, report broken ones. */
 const LABOUR_HANDLERS = new Set(['me', 'shops', 'pickupSlip', 'pickup', 'reportBreakage', 'labourHome']);
@@ -77,6 +91,10 @@ export class AdminGuard implements CanActivate {
     const shopId = (req.params as Record<string, string> | undefined)?.id;
     const labour = !viewer.admin && (shopId ? viewer.labourShopIds.includes(shopId) : viewer.labourShopIds.length === viewer.shopIds.length);
     if (labour && !LABOUR_HANDLERS.has(ctx.getHandler().name)) throw new ForbiddenException('Labour login sirf scan kar sakta hai');
+    const partner = !viewer.admin && (shopId ? viewer.partnerShopIds.includes(shopId) : viewer.partnerShopIds.length === viewer.shopIds.length);
+    if (partner && req.method !== 'GET' && !PARTNER_HANDLERS.has(ctx.getHandler().name)) {
+      throw new ForbiddenException('Partner login sirf dekh sakta hai aur bank statement chadha sakta hai');
+    }
     req.viewer = viewer;
     return true;
   }
@@ -90,7 +108,7 @@ const Range = z.object({ from: Day, to: Day });
 const Code = z.object({ phone, code: z.string().regex(/^\d{4,8}$/, 'must be the OTP digits') });
 const CustomerKey = z.union([z.string().regex(/^[6-9]\d{9}$/), z.string().regex(/^[0-9a-f-]{36}~[0-9a-f-]{36}$/)]);
 const RejectBody = z.object({ reason: z.string().trim().max(200).default('') });
-const ConsoleRole = z.enum(['admin', 'accountant', 'labour']);
+const ConsoleRole = z.enum(['admin', 'accountant', 'labour', 'partner']);
 const Person = z.object({ phone, name: z.string().trim().max(80).default(''), role: ConsoleRole });
 const NewShopBody = z.object({
   name: z.string().trim().min(1, 'Dukaan ka naam daalein').max(120), nickname: z.string().trim().max(60).default(''),
@@ -194,6 +212,8 @@ const GaadiBody = z.object({
   lots: z.array(z.object({ brandId: z.uuid().optional(), brandName: z.string().trim().max(60).optional(), grade, qty: z.number().int().min(0).max(10_000_000), ratePaise: paise,
     boxGrams: z.number().int().min(0).max(1_000_000).optional() })).min(1).max(12),
 });
+/** A gaadi changed: as a new one, but a nariyal or amrud gaadi sends its number alone (no lots). */
+const GaadiEditBody = GaadiBody.extend({ lots: GaadiBody.shape.lots.unwrap().array().max(12).default([]) });
 export const BeejakBody = z.object({
   day: z.iso.date().optional(),
   bhav: z.array(z.object({ quality: z.string().max(60), ratePaise: paise })).max(50),
@@ -340,7 +360,7 @@ export class AdminController {
     private readonly alerts: UdhaarAlertsService, private readonly reminders: RemindersService, private readonly creditors: CreditorsService,
     private readonly machines: MachinesService, private readonly deposits: DepositsService, private readonly masters: MastersService,
     private readonly crates: CratesService, private readonly coldStore: ColdStoreService, private readonly books: BooksService,
-    private readonly vouchers: VouchersService, private readonly invoices: InvoicesService,
+    private readonly vouchers: VouchersService, private readonly invoices: InvoicesService, private readonly nariyal: NariyalHisabService,
   ) {}
 
   // ---------------------------------------------------------------- Journal Voucher
@@ -840,7 +860,7 @@ export class AdminController {
   /** Who is signed in, and which shops they may open. */
   @Get('me')
   me(@See() v: Viewer) {
-    return { phone: v.phone, admin: v.admin, shopIds: v.admin ? null : v.shopIds, labourShopIds: v.labourShopIds };
+    return { phone: v.phone, admin: v.admin, shopIds: v.admin ? null : v.shopIds, labourShopIds: v.labourShopIds, partnerShopIds: v.partnerShopIds };
   }
 
   /** Admin: every shop, requests first. Owner: their own shops. */
@@ -912,7 +932,7 @@ export class AdminController {
   @HttpCode(200)
   setBranchTeam(@See() v: Viewer, @Param('id') id: string, @Body() body: unknown) {
     const b = parse(BranchTeamBody, body);
-    const owned = new Set(v.shopIds.filter((s) => !v.labourShopIds.includes(s)));
+    const owned = new Set(v.shopIds.filter((s) => !v.labourShopIds.includes(s) && !v.partnerShopIds.includes(s)));
     return this.adminConsole.setBranches(mine(v, id), b.phone, b.name, b.roles, (s) => v.admin || owned.has(s));
   }
 
@@ -1096,8 +1116,8 @@ export class AdminController {
   }
 
   @Get('shops/:id/buyers')
-  async buyers(@See() v: Viewer, @Param('id') id: string, @Query('q') q?: string, @Query('area') area?: string, @Query('all') all?: string) {
-    return { buyers: await this.admin.buyers(mine(v, id), (q ?? '').trim().slice(0, 60), (area ?? '').slice(0, 60), all === '1') };
+  async buyers(@See() v: Viewer, @Param('id') id: string, @Query('q') q?: string, @Query('area') area?: string, @Query('all') all?: string, @Query('jama') jama?: string) {
+    return { buyers: await this.admin.buyers(mine(v, id), (q ?? '').trim().slice(0, 60), (area ?? '').slice(0, 60), all === '1', jama === '1') };
   }
 
   @Get('shops/:id/buyers/:buyerId')
@@ -1171,10 +1191,55 @@ export class AdminController {
     return this.entries.pickup(v.phone, mine(v, id), parse(z.object({ billId: z.uuid(), qty: z.number().int().min(1).max(100000) }), body));
   }
 
-  /** A grapes gaadi changed: number, supplier, place, bhada, and each quality's boxes. */
+  /** Nariyal Dispatch: the days' parchis, scanned back (Maal diya) or still missing, as the app's Hisab > Dispatch. */
+  @Get('shops/:id/nariyal/dispatch')
+  nariyalDispatch(@See() v: Viewer, @Param('id') id: string, @Query('from') from?: string, @Query('to') to?: string) {
+    const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+    return this.entries.nariyalDispatch(mine(v, id), parse(day, from), parse(day, to ?? from));
+  }
+
+  /** A nariyal parchi by its QR, barcode or number, for the website's scanner. */
+  @Get('shops/:id/nariyal/slip')
+  nariyalSlip(@See() v: Viewer, @Param('id') id: string, @Query('code') code?: string) {
+    return this.entries.nariyalSlip(mine(v, id), parse(z.string().trim().min(1).max(40), code ?? ''));
+  }
+
+  /** Maal diya: the parchi is back, its maal has gone. Once per parchi. */
+  @Post('shops/:id/nariyal/returns')
+  nariyalReturn(@See() v: Viewer, @Param('id') id: string, @Body() body: unknown) {
+    return this.entries.nariyalReturn(v.phone, mine(v, id), parse(z.object({ billId: z.uuid() }), body).billId);
+  }
+
+  /** Nariyal Bhada: each gaadi's Bada for the days (arrived or paid off in them), paid or baaki, and from which book. */
+  @Get('shops/:id/nariyal/bhada')
+  nariyalBhada(@See() v: Viewer, @Param('id') id: string, @Query('from') from?: string, @Query('to') to?: string) {
+    const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+    return this.nariyal.bhada(mine(v, id), parse(day, from), parse(day, to ?? from));
+  }
+
+  /** Nariyal Supplier ledger: the suppliers to pick from (Purchase and Commission gaadis), with what is still to pay each. */
+  @Get('shops/:id/nariyal/suppliers')
+  nariyalSuppliers(@See() v: Viewer, @Param('id') id: string) {
+    return this.nariyal.suppliers(mine(v, id));
+  }
+
+  /** One nariyal supplier's ledger for the days: opening, gaadis, payments, kaat / baaki badla, running balance. */
+  @Get('shops/:id/nariyal/suppliers/:key/ledger')
+  nariyalSupplierLedger(@See() v: Viewer, @Param('id') id: string, @Param('key') key: string, @Query('from') from?: string, @Query('to') to?: string) {
+    const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+    return this.nariyal.ledger(mine(v, id), parse(SupplierKey, key), parse(day, from), parse(day, to ?? from));
+  }
+
+  /** "Scan galat tha": a Maal diya made by mistake, taken back. */
+  @Post('shops/:id/nariyal/returns/undo')
+  nariyalUnscan(@See() v: Viewer, @Param('id') id: string, @Body() body: unknown) {
+    return this.entries.nariyalUnscan(v.phone, mine(v, id), parse(z.object({ billId: z.uuid() }), body).billId);
+  }
+
+  /** A gaadi changed: number, supplier, place, bhada, and (grapes, cheeku) each quality's boxes. Nariyal and amrud: the number only. */
   @Post('shops/:id/gaadi/:truckId')
   editGaadi(@See() v: Viewer, @Param('id') id: string, @Param('truckId') truckId: string, @Body() body: unknown) {
-    return this.entries.editGaadi(v.phone, mine(v, id), parse(z.uuid(), truckId), parse(GaadiBody, body));
+    return this.entries.editGaadi(v.phone, mine(v, id), parse(z.uuid(), truckId), parse(GaadiEditBody, body));
   }
 
   /** Angoor: broken-box requests from the gaadi, and the accountant settling one (re-priced) or turning it down. */
@@ -1329,6 +1394,21 @@ export class AdminController {
     return this.books.purcha(mine(v, id), r.from, r.to);
   }
 
+  // ---------------------------------------------------------------- Books: Balance Sheet and P&L (read-only)
+
+  /** Lena / Dena as on a date, read off that day's Trial Balance groups, so the two always tie out. */
+  @Get('shops/:id/books/balance-sheet')
+  balanceSheet(@See() v: Viewer, @Param('id') id: string, @Query() query: unknown) {
+    return this.books.balanceSheet(booksViewer(v, id), parse(OnQuery, query).on ?? todayIst());
+  }
+
+  /** Profit and loss over a period: the Munafa report's own sums, with month lines. */
+  @Get('shops/:id/books/pnl')
+  pnl(@See() v: Viewer, @Param('id') id: string, @Query() query: unknown) {
+    const r = parse(Range, query);
+    return this.books.pnl(booksViewer(v, id), r.from, r.to);
+  }
+
   /** The shop's complete books as one Excel workbook, streamed. Read-only. */
   @Get('shops/:id/books/backup')
   async backup(@See() v: Viewer, @Param('id') id: string, @Res() res: Response) {
@@ -1359,4 +1439,19 @@ export function mine(v: Viewer, id: string): string {
 
 function adminOnly(v: Viewer) {
   if (!v.admin) throw new ForbiddenException('Yeh sirf MandiPlus admin dekh sakte hain');
+}
+
+/**
+ * The read-only books handlers: what a "may view books" login (a partner, later) could be let
+ * through AdminGuard for, as LABOUR_HANDLERS is for a labour login.
+ */
+export const BOOKS_VIEW_HANDLERS = new Set(['bookAccounts', 'bookLedger', 'trialBalance', 'bookParties', 'bigTransactions', 'salePurchase', 'purcha', 'balanceSheet', 'pnl']);
+
+/**
+ * Who may read a shop's books (Balance Sheet, P&L): today whoever may open the shop at all. A
+ * read-only viewer of the books (a partner) belongs here, not in mine(), so it can see books
+ * without being able to write anything else.
+ */
+export function booksViewer(v: Viewer, id: string): string {
+  return mine(v, id);
 }

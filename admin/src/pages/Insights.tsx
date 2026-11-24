@@ -10,6 +10,7 @@ import { Bal, PeriodBar, Skeleton } from '../ui'
 import { openRaseed, openVoucher, openWhatsApp } from '../keys'
 import { dayRange, dmy, fileName, rs, useExport } from '../export/doc'
 import { HEADS } from './DayBook'
+import { DueDetail, OpenSlipRows } from './Outstanding'
 
 const daysSince = (iso: string | null) => (iso ? Math.max(0, Math.round((Date.now() - Date.parse(iso.length === 10 ? `${iso}T12:00:00+05:30` : iso)) / 86_400_000)) : null)
 const MOBILE = /^[6-9]\d{9}$/
@@ -27,6 +28,7 @@ export function Vasooli({ shopId }: { shopId: string }) {
   const [tab, setTab] = useState<'lena' | 'band'>(() => (hashQuery().get('v') === 'band' ? 'band' : 'lena'))
   const pick = (v: 'lena' | 'band') => { setTab(v); setHashQuery({ ...Object.fromEntries(hashQuery()), v }) }
   const out = useLoad(() => api<Out>(`/v1/admin/shops/${shopId}/outstanding`), [shopId])
+  const [slipsOf, setSlipsOf] = useState<string | null>(null)
   const all = useLoad(() => api<{ buyers: BuyerRow[] }>(`/v1/admin/shops/${shopId}/buyers?all=1&q=`).then((r) => r.buyers), [shopId])
 
   // Priority: no payment for longest, then the oldest due, then the biggest.
@@ -73,10 +75,11 @@ export function Vasooli({ shopId }: { shopId: string }) {
                   {lena.map((r) => {
                     const mobile = MOBILE.test(r.phone)
                     const open = () => { location.hash = href({ page: 'grahak', shopId, buyerId: r.buyerId }) }
-                    return (
+                    return [
                       <tr key={r.buyerId} data-row tabIndex={0} onClick={open} onKeyDown={(e) => { if (e.key === 'Enter') open() }}>
                         <td className="code-col">{r.code ? <span className="code">{r.code}</span> : null}</td>
-                        <td className="main-col"><b>{r.name}</b><small>{mobile ? phone(r.phone) : ''}<span className="show-sm">{mobile ? ' · ' : ''}{t('{n} din chup', { n: r.quiet })}</span></small></td>
+                        <td className="main-col"><b>{r.name}</b><small>{mobile ? phone(r.phone) : ''}<span className="show-sm">{mobile ? ' · ' : ''}{t('{n} din chup', { n: r.quiet })}</span></small>
+                          <DueDetail r={r} open={slipsOf === r.buyerId} onToggle={() => setSlipsOf(slipsOf === r.buyerId ? null : r.buyerId)} /></td>
                         <td className="num amt-col money b due">{rupees(r.duePaise)}</td>
                         <td className={`num opt-col money${r.d31 ? ' due' : ''}`}>{r.d31 ? rupees(r.d31) : ''}</td>
                         <td className="opt-col muted">{r.lastPaidAt ? shortDate(r.lastPaidAt.slice(0, 10)) : t('Kabhi nahi')}</td>
@@ -85,8 +88,9 @@ export function Vasooli({ shopId }: { shopId: string }) {
                           {mobile && <a className="btn ghost act" href={`tel:+91${r.phone}`}>{t('Call')}</a>}
                           {mobile && <button type="button" className="btn ghost act" onClick={() => openWhatsApp(shopId, r.buyerId)}>WhatsApp</button>}
                         </td>
-                      </tr>
-                    )
+                      </tr>,
+                      slipsOf === r.buyerId && <OpenSlipRows key={`${r.buyerId}-slips`} shopId={shopId} slips={r.slips} cols={7} />,
+                    ]
                   })}
                 </tbody>
               </table>

@@ -10,9 +10,9 @@ import type { Commodity } from '../common/commodity';
  * with their number and lands in the shop — the same rows the app's "Nayi dukaan" and Team
  * screens write (AccountsService.createShop / addMember / setRole / removeMember).
  */
-export type ConsoleRole = 'admin' | 'accountant' | 'labour';
-const toDb = (r: ConsoleRole) => (r === 'admin' ? 'owner' : r === 'labour' ? 'labour' : 'munim');
-const fromDb = (r: string): ConsoleRole => (r === 'owner' ? 'admin' : r === 'labour' ? 'labour' : 'accountant');
+export type ConsoleRole = 'admin' | 'accountant' | 'labour' | 'partner';
+const toDb = (r: ConsoleRole) => (r === 'admin' ? 'owner' : r === 'labour' || r === 'partner' ? r : 'munim');
+const fromDb = (r: string): ConsoleRole => (r === 'owner' ? 'admin' : r === 'labour' || r === 'partner' ? r : 'accountant');
 
 export type NewShop = {
   name: string; nickname: string; mandi: string; shopNo: string; phad: string; gstin: string; address: string; slipCode: string

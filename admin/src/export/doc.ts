@@ -16,6 +16,8 @@ export type ExportRow = {
   /** band: a day's divider; heading/total/final: the daybook's section lines. */
   kind?: 'band' | 'heading' | 'total' | 'final'
   bold?: boolean; strike?: boolean
+  /** Cells printed bold on their own (a table row): "PAID" on a paid gaadi's Bhada line. */
+  boldCells?: number[]
 }
 export type ExportDoc = {
   style: 'ledger' | 'book'

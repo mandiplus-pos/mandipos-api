@@ -3,7 +3,7 @@ import { api } from '../api'
 import { count, rupees } from '../format'
 import { t } from '../i18n'
 import { booksChanged } from '../useLoad'
-import { BuyerPicker, Field, isWalkInName, Money, Seg, Sheet, Tick, type PickedBuyer } from './fields'
+import { BuyerPicker, Field, isWalkInName, Money, payForBuyer, Seg, Sheet, Tick, udhaarBuyerError, usePayMode, type PickedBuyer } from './fields'
 import type { EditBill, EditGaadi, VoiceDraft } from './kinds'
 
 /** What the grapes forms read from entry-options: every quality on every open gaadi, and each supplier's last gaadi. */
@@ -16,7 +16,6 @@ export type AngoorOptions = {
   banks: string[]
 }
 
-type Pay = 'cash' | 'upi' | 'credit' | 'split' | 'after' | 'free'
 type Line = { key: string; qty: number; ratePaise: number }
 const keyOf = (truckId: string, brandId: string) => `${truckId}:${brandId}`
 
@@ -56,12 +55,12 @@ export function AngoorParchiForm({ shopId, o, editing, draft, onClose, onDone }:
     ? editing.lines.filter((l) => !l.leak && l.truckId && l.brandId).map((l) => ({ key: keyOf(l.truckId!, l.brandId!), qty: l.qty, ratePaise: l.ratePaise }))
     : draft?.lots?.length ? draft.lots.map((l) => ({ key: keyOf(l.truckId, l.brandId), qty: l.qty, ratePaise: l.ratePaise }))
     : [{ key: lots[0] ? keyOf(lots[0].truckId, lots[0].brandId) : '', qty: 0, ratePaise: 0 }])
-  const [pay, setPay] = useState<Pay>(() => {
-    if (!editing) return draft?.pay ?? (draft?.buyer?.id ? 'credit' : 'cash')
+  const { pay, setPay, followBuyer } = usePayMode((() => {
+    if (!editing) return draft?.pay ?? payForBuyer(draft?.buyer as PickedBuyer | null | undefined)
     const b = editing
     return b.payMode === 'free' ? 'free' : b.payMode === 'after' ? 'after' : b.paidPaise === 0 ? 'credit'
       : b.cashPaise === b.totalPaise ? 'cash' : b.upiPaise === b.totalPaise ? 'upi' : 'split'
-  })
+  })(), !!editing || !!draft?.pay)
   const [cash, setCash] = useState(editing?.cashPaise ?? draft?.cashPaise ?? 0)
   const [upi, setUpi] = useState(editing?.upiPaise ?? draft?.upiPaise ?? 0)
   const [bank, setBank] = useState(editing?.upiBank || o.banks[0] || '')
@@ -93,13 +92,10 @@ export function AngoorParchiForm({ shopId, o, editing, draft, onClose, onDone }:
   const apmc = o.apmcOn ? Math.round(goods * 0.01) : 0
   const labourPaise = !free && credit && labour ? boxes * rate : 0
   const total = goods + apmc + labourPaise
-  const walkIn = !buyer || (buyer.id === null && isWalkInName(buyer.name))
   const set = (i: number, patch: Partial<Line>) => setLines(lines.map((l, j) => (j === i ? { ...l, ...patch } : l)))
   const pickBuyer = (b: PickedBuyer | null) => {
     setBuyer(b)
-    if (b?.id === null && b.name === 'Cash') setPay('cash')
-    else if (b?.id === null && b.name === 'Bank') setPay('upi')
-    else if (b?.id && pay === 'cash') setPay('credit')
+    followBuyer(b)
     if (b?.id) { setAddress(b.address ?? ''); setStand(b.destination ?? '') }
   }
 
@@ -127,7 +123,9 @@ export function AngoorParchiForm({ shopId, o, editing, draft, onClose, onDone }:
         if (overSig && warned !== overSig) { setError(''); setWarned(overSig); return }
         const filled = lines.filter((l) => l.qty > 0 && lot(l.key))
         if (!filled.length) return setError(t('Quality aur box daalein'))
-        if (!free && walkIn && (credit || (pay === 'split' && cash + upi < total))) return setError(t('Udhaar ke liye grahak chunein'))
+        if (!pay) return setError(t('Pehle payment mode chunein'))
+        const noUdhaar = udhaarBuyerError(buyer, !free && (credit || (pay === 'split' && cash + upi < total)), pay === 'split' ? total - cash - upi : undefined)
+        if (noUdhaar) return setError(noUdhaar)
         if (delivery && !address.trim() && !stand.trim()) return setError(t('Delivery ka pata daalein'))
         remember('mp.angoorLabourRate', String(rate)); remember('mp.staff', staff.trim())
         void save(editing ? `/v1/admin/shops/${shopId}/bills/${editing.id}/edit` : `/v1/admin/shops/${shopId}/entries/parchi`, {

@@ -17,6 +17,7 @@ import type { Period } from '../period'
 import { isCheeku } from '../commodity'
 import { cheekuCreditorReport } from '../cheeku'
 import { CheekuBeejakSheet } from './Cheeku'
+import { editEntry } from '../entries/kinds'
 
 // ================================================================ shared bits
 
@@ -258,6 +259,228 @@ function GroupRows({ g, open, onToggle, onRow }: { g: TbGroup & { shown: TbRow[]
           <td className="num money">{r.cr ? rupees(r.cr) : ''}</td>
         </tr>
       ))}
+    </>
+  )
+}
+
+// ================================================================ Balance Sheet
+
+type BsLine = { key: string; name: string; paise: number; sub?: string; link?: TbRow['link'] }
+type BsGroup = { key: string; name: string; paise: number; rows: BsLine[] }
+type Bs = {
+  on: string; fy: { from: string; label: string }; grapes: boolean; cheeku?: boolean
+  assets: BsGroup[]; liabilities: BsGroup[]
+  profit: { from: string; to: string; salesPaise: number; incomePaise: number; purchasePaise: number; expensePaise: number; profitPaise: number }
+  suspense: { paise: number; untalliedPaise: number; rows: BsLine[] }
+  totals: { assetsPaise: number; liabilitiesPaise: number; lenaPaise: number; denaPaise: number; balanced: boolean }
+  trialBalance: { dr: number; cr: number; differencePaise: number }
+  memo: { cratesQty: number; cratesPaise: number }
+}
+
+/** A ledger row's page: a grahak's khata, a supplier's khata, or the account in the General Ledger. */
+function openBookLink(shopId: string, d: { grapes: boolean; cheeku?: boolean; fy: { from: string }; on: string }, link?: TbRow['link']) {
+  if (!link) return
+  if (link.kind === 'grahak') location.hash = href({ page: 'grahak', shopId, buyerId: link.id })
+  else if (link.kind === 'supplier') location.hash = d.grapes ? creditorHref(shopId, link.id) : d.cheeku ? cheekuCreditorHref(shopId, link.id) : href({ page: 'supplier', shopId, key: link.id })
+  else location.hash = ledgerHref(shopId, link.id, d.fy.from, d.on)
+}
+
+/**
+ * Lena and Dena as on a day, read off the Trial Balance for that day (the server builds it from
+ * the same groups), with this year's munafa on the Dena side and any suspense said, not hidden.
+ */
+export function BalanceSheet({ shopId }: { shopId: string }) {
+  const [on, setOn] = useState(() => hashQuery().get('on') ?? todayIst())
+  const [opened, setOpened] = useState<Set<string> | null>(null)
+  const { data, error, loading } = useLoad(() => api<Bs>(`/v1/admin/shops/${shopId}/books/balance-sheet?on=${on}`), [shopId, on])
+  const pickOn = (d: string) => { setOn(d); setHashQuery({ ...Object.fromEntries(hashQuery()), on: d }) }
+  const isOpen = (g: BsGroup) => (opened ? opened.has(g.key) : g.rows.length <= 12)
+  const toggle = (g: BsGroup) => {
+    const all = data ? [...data.assets, ...data.liabilities, suspenseGroup(data)] : []
+    const s = new Set(opened ?? all.filter((x) => x.rows.length <= 12).map((x) => x.key))
+    if (s.has(g.key)) s.delete(g.key); else s.add(g.key)
+    setOpened(s)
+  }
+  const go = (r: BsLine) => { if (data) openBookLink(shopId, data, r.link) }
+  const profitName = (d: Bs) => `${t('Is saal ka munafa')} (FY ${d.fy.label})`
+
+  useExport(data ? () => {
+    const susp = suspenseGroup(data)
+    const groupRows = (g: BsGroup, sign = 1) => [
+      { cells: [t(g.name), rs(sign * g.paise)], bold: true },
+      ...(isOpen(g) ? g.rows.map((r) => ({ cells: [`    ${t(r.name)}${r.sub ? ` (${r.sub})` : ''}`, rs(sign * r.paise)] })) : []),
+    ]
+    return {
+      style: 'book' as const, title: 'BALANCE SHEET', dateLine: `AS ON ${dmyLong(data.on)}  ·  FY ${data.fy.label}`, file: fileName('Balance Sheet', data.on), sign: true,
+      columns: [{ label: t('Particulars'), wide: true }, { label: t('Rakam'), num: true }],
+      rows: [
+        { kind: 'band' as const, cells: [t('DENA (LIABILITIES)')] },
+        ...data.liabilities.flatMap((g) => groupRows(g)),
+        { cells: [profitName(data), rs(data.profit.profitPaise)], bold: true },
+        ...(data.suspense.paise < 0 ? groupRows(susp, -1) : []),
+        { cells: [t('Kul dena'), rs(data.totals.denaPaise)], bold: true },
+        { kind: 'band' as const, cells: [t('LENA (ASSETS)')] },
+        ...data.assets.flatMap((g) => groupRows(g)),
+        ...(data.suspense.paise > 0 ? groupRows(susp) : []),
+        { cells: [t('Kul lena'), rs(data.totals.lenaPaise)], bold: true },
+      ],
+      note: t('Maal stock ki keemat isme nahi: poori kharid Purchase mein hai. Is saal ka munafa = bikri + aamdani − kharid − kharcha.'),
+    }
+  } : null, [data, opened])
+
+  return (
+    <>
+      <div className="toolbar">
+        <label className="fld" style={{ display: 'flex', gap: 8, alignItems: 'center' }}><span className="muted">{t('Tak')}</span>
+          <input className="field" type="date" max={todayIst()} value={on} onChange={(e) => e.target.value && pickOn(e.target.value)} /></label>
+        <button type="button" className="btn ghost sm" onClick={() => data && setOpened(new Set([...data.assets, ...data.liabilities, suspenseGroup(data)].map((g) => g.key)))}>{t('Sab kholein')}</button>
+        <button type="button" className="btn ghost sm" onClick={() => setOpened(new Set())}>{t('Band karein')}</button>
+      </div>
+      {error && <p className="error">{error}</p>}
+      {!data ? <Skeleton /> : (
+        <div className={`stack${loading ? ' dim' : ''}`}>
+          <div className="card sum">
+            <div><span className="lb">{t('Lena (assets)')}</span><span className="v">{rupees(data.totals.lenaPaise)}</span></div>
+            <div><span className="lb">{t('Dena (liabilities)')}</span><span className="v">{rupees(data.totals.denaPaise)}</span></div>
+            <div><span className="lb">{t('Is saal ka munafa')}</span><span className={`v ${data.profit.profitPaise < 0 ? 'due' : 'jama'}`}>{rupees(data.profit.profitPaise)}</span></div>
+            <div><span className="lb">{t('Farq (opening/suspense)')}</span><span className={`v${data.suspense.paise ? ' due' : ''}`}>{drcr(data.suspense.paise)}</span></div>
+          </div>
+          {!data.totals.balanced && <p className="error">{t('Balance sheet tally nahi hua')}: {rupees(Math.abs(data.totals.lenaPaise - data.totals.denaPaise))}</p>}
+          <div className="pl">
+            <div className="card wrap-x">
+              <div className="hd"><h3>{t('Dena (liabilities)')}</h3></div>
+              <table className="tbl pl-tbl"><tbody>
+                {data.liabilities.map((g) => <BsGroupRows key={g.key} g={g} open={isOpen(g)} onToggle={() => toggle(g)} onRow={go} />)}
+                <tr><td><b>{profitName(data)}</b><br /><small className="muted">{t('Bikri')} {rupees(data.profit.salesPaise)} + {t('Aamdani')} {rupees(data.profit.incomePaise)} − {t('Kharid')} {rupees(data.profit.purchasePaise)} − {t('Kharcha')} {rupees(data.profit.expensePaise)}</small></td>
+                  <td className={`num money b${data.profit.profitPaise < 0 ? ' due' : ''}`}>{rupees(data.profit.profitPaise)}</td></tr>
+                {data.suspense.paise < 0 && <BsGroupRows g={suspenseGroup(data)} sign={-1} open={isOpen(suspenseGroup(data))} onToggle={() => toggle(suspenseGroup(data))} onRow={go} />}
+              </tbody><tfoot><tr><td>{t('Kul dena')}</td><td className="num money">{rupees(data.totals.denaPaise)}</td></tr></tfoot></table>
+            </div>
+            <div className="card wrap-x">
+              <div className="hd"><h3>{t('Lena (assets)')}</h3></div>
+              <table className="tbl pl-tbl"><tbody>
+                {data.assets.map((g) => <BsGroupRows key={g.key} g={g} open={isOpen(g)} onToggle={() => toggle(g)} onRow={go} />)}
+                {data.suspense.paise > 0 && <BsGroupRows g={suspenseGroup(data)} open={isOpen(suspenseGroup(data))} onToggle={() => toggle(suspenseGroup(data))} onRow={go} />}
+              </tbody><tfoot><tr><td>{t('Kul lena')}</td><td className="num money">{rupees(data.totals.lenaPaise)}</td></tr></tfoot></table>
+            </div>
+          </div>
+          <p className="muted note">{t('Trial Balance se bana')}: Dr {rupees(data.trialBalance.dr)} · Cr {rupees(data.trialBalance.cr)}. {t('Maal stock ki keemat isme nahi: poori kharid Purchase mein hai. Is saal ka munafa = bikri + aamdani − kharid − kharcha.')}</p>
+          {data.memo.cratesQty !== 0 && <p className="muted">{t('Crates baaki')}: {count(data.memo.cratesQty)} · {rupees(data.memo.cratesPaise)}</p>}
+        </div>
+      )}
+    </>
+  )
+}
+
+/** The suspense lines as one group (paise: Dr positive, so it reads on the Lena side as is). */
+const suspenseGroup = (d: Bs): BsGroup => ({ key: 'suspense', name: 'Difference in opening / suspense', paise: d.suspense.paise, rows: d.suspense.rows })
+
+function BsGroupRows({ g, sign = 1, open, onToggle, onRow }: { g: BsGroup; sign?: number; open: boolean; onToggle: () => void; onRow: (r: BsLine) => void }) {
+  return (
+    <>
+      <tr data-row tabIndex={0} onClick={onToggle} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle() } }}>
+        <td><b>{open ? '▾' : '▸'} {t(g.name)}</b> <small className="muted inline">{g.rows.length > 1 ? `(${count(g.rows.length)})` : ''}</small></td>
+        <td className="num money b">{rupees(sign * g.paise)}</td>
+      </tr>
+      {open && g.rows.map((r) => (
+        <tr key={r.key} data-row={r.link ? '' : undefined} tabIndex={r.link ? 0 : undefined} onClick={() => onRow(r)} onKeyDown={(e) => { if (e.key === 'Enter') onRow(r) }}>
+          <td style={{ paddingLeft: 30 }}>{t(r.name)}{r.sub && <small className="muted inline"> {r.sub}</small>}</td>
+          <td className="num money">{rupees(sign * r.paise)}</td>
+        </tr>
+      ))}
+    </>
+  )
+}
+
+// ================================================================ P&L
+
+type Pnl = {
+  from: string; to: string; salesPaise: number; cogsPaise: number; spoiledPaise: number; grossPaise: number
+  expenses: { head: string; paise: number }[]; expensePaise: number; otherIncome: { head: string; paise: number }[]; otherPaise: number; netPaise: number
+  grapes: boolean; cheeku?: boolean; kharidPaise: number; beejakPaise: number; months: SpRow[]
+}
+
+/** Profit and loss over a period: the Munafa report's own figures (one formula), month by month under it. */
+export function ProfitLoss({ shopId }: { shopId: string }) {
+  const [period, setPeriod] = usePeriod('30')
+  const { data, error, loading } = useLoad(() => api<Pnl>(`/v1/admin/shops/${shopId}/books/pnl?from=${period.from}&to=${period.to}`), [shopId, period.from, period.to])
+  const head = (h: string) => HEADS[h] ?? h
+
+  useExport(data ? () => ({
+    style: 'book' as const, title: 'PROFIT & LOSS', dateLine: dayRange(data.from, data.to), file: fileName('Profit-Loss', data.from, data.to), sign: true,
+    rows: [
+      { cells: [t('Bikri'), '', '', rs(data.salesPaise)] },
+      { cells: [t('(−) Bike maal ki laagat'), '', '', rs(-data.cogsPaise)] },
+      ...(data.spoiledPaise ? [{ cells: [t('(−) Phoota maal'), '', '', rs(-data.spoiledPaise)] }] : []),
+      { kind: 'total' as const, cells: [t('Kul munafa'), '', '', rs(data.grossPaise)] },
+      { kind: 'heading' as const, cells: [t('KHARCHA')] },
+      ...data.expenses.map((e) => ({ cells: [head(e.head), '', '', rs(e.paise)] })),
+      { kind: 'total' as const, cells: [t('Kul kharcha'), '', '', rs(data.expensePaise)] },
+      ...(data.otherIncome.length ? [{ kind: 'heading' as const, cells: [t('AUR AAMDANI')] }, ...data.otherIncome.map((e) => ({ cells: [head(e.head), '', '', rs(e.paise)] }))] : []),
+      { kind: 'final' as const, cells: [t('Shuddh munafa'), '', '', rs(data.netPaise)] },
+      ...(data.months.length > 1 ? [
+        { kind: 'heading' as const, cells: [t('MAHINA-WISE')] },
+        ...data.months.map((r) => ({ cells: [month(r.key), `${t('Bikri')} ${rs(r.salesPaise)}`, `${t('Kul munafa')} ${rs(r.grossPaise)}`, rs(r.netPaise)] })),
+      ] : []),
+    ],
+  }) : null, [data])
+
+  const line = (label: string, paise: number, cls = '') => <tr className={cls}><td>{label}</td><td className="num money">{paise < 0 ? `(−) ${rupees(-paise)}` : rupees(paise)}</td></tr>
+  return (
+    <>
+      <div className="toolbar"><PeriodBar value={period} onChange={setPeriod} /><FyButton value={period} onChange={setPeriod} /></div>
+      {error && <p className="error">{error}</p>}
+      {!data ? <Skeleton /> : (
+        <div className={`stack${loading ? ' dim' : ''}`}>
+          <div className="card sum">
+            <div><span className="lb">{t('Bikri')}</span><span className="v">{rupees(data.salesPaise)}</span></div>
+            <div><span className="lb">{t('Kul munafa')}</span><span className={`v ${data.grossPaise < 0 ? 'due' : 'jama'}`}>{rupees(data.grossPaise)}</span></div>
+            <div><span className="lb">{t('Kharcha')}</span><span className="v">{rupees(data.expensePaise)}</span></div>
+            <div><span className="lb">{t('Shuddh munafa')}</span><span className={`v ${data.netPaise < 0 ? 'due' : 'jama'}`}>{rupees(data.netPaise)}</span></div>
+          </div>
+          <div className="pl">
+            <div className="card">
+              <div className="hd"><h3>{t('Vyapar khata')}</h3></div>
+              <table className="tbl pl-tbl"><tbody>
+                {line(t('Bikri'), data.salesPaise)}
+                {line(t('(−) Bike maal ki laagat'), -data.cogsPaise)}
+                {data.spoiledPaise > 0 && line(t('(−) Phoota maal'), -data.spoiledPaise)}
+              </tbody><tfoot>{line(t('Kul munafa'), data.grossPaise)}</tfoot></table>
+            </div>
+            <div className="card">
+              <div className="hd"><h3>{t('Kharcha aur aamdani')}</h3></div>
+              <table className="tbl pl-tbl"><tbody>
+                {line(t('Kul munafa'), data.grossPaise, 'b')}
+                {data.expenses.map((e) => <tr key={`x-${e.head}`}><td>(−) {head(e.head)}</td><td className="num money">{rupees(e.paise)}</td></tr>)}
+                {data.otherIncome.map((e) => <tr key={`i-${e.head}`}><td>(+) {head(e.head)}</td><td className="num money">{rupees(e.paise)}</td></tr>)}
+              </tbody><tfoot>{line(t('Shuddh munafa'), data.netPaise)}</tfoot></table>
+            </div>
+          </div>
+          {data.months.length > 0 && (
+            <div className="card wrap-x">
+              <table className="tbl fold">
+                <thead><tr><th>{t('Mahina')}</th><th className="num opt-col">{t('Kharid')}</th><th className="num">{t('Bikri')}</th><th className="num opt-col">{t('Laagat')}</th>
+                  <th className="num opt-col">{t('Kul munafa')}</th><th className="num opt-col">{t('Kharcha')}</th><th className="num opt-col">{t('Aamdani')}</th><th className="num">{t('Shuddh')}</th></tr></thead>
+                <tbody>
+                  {data.months.map((r) => (
+                    <tr key={r.key}>
+                      <td className="main-col"><b style={{ whiteSpace: 'nowrap' }}>{month(r.key)}</b></td>
+                      <td className="num opt-col money">{rupees(r.kharidPaise)}</td>
+                      <td className="num money">{rupees(r.salesPaise)}</td>
+                      <td className="num opt-col money">{rupees(r.laagatPaise)}</td>
+                      <td className="num opt-col money">{rupees(r.grossPaise)}</td>
+                      <td className="num opt-col money">{rupees(r.kharchaPaise)}</td>
+                      <td className="num opt-col money">{rupees(r.otherPaise)}</td>
+                      <td className={`num money b${r.netPaise < 0 ? ' due' : ''}`}>{rupees(r.netPaise)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="muted note">{t('Munafa report jaisa hi: laagat gaadi ke har nag ki (kharid + bhada + mazdoori + commission), sirf bike aur phoote maal ki.')}</p>
+        </div>
+      )}
     </>
   )
 }
@@ -559,6 +782,10 @@ export function Purcha({ shopId }: { shopId: string }) {
       freightPaise: a.freightPaise + x.freightPaise, beejakPaise: a.beejakPaise + x.beejakPaise, pending: a.pending + x.pending }),
     { gaadis: 0, boxes: 0, kg: 0, kharidPaise: 0, freightPaise: 0, beejakPaise: 0, pending: 0 })
   const open = (g: PurchaGaadi) => { if (grapes) setBeejak(g.truckId); else if (cheeku) setBeejak(g.truckId); else if (g.supplierKey) location.hash = href({ page: 'supplier', shopId, key: g.supplierKey }) }
+  // Nariyal and amrud: the gaadi's number (typed wrong when it came) is changed from its row. Grapes
+  // and cheeku change theirs from their own Gaadi pages.
+  const editable = !grapes && !cheeku
+  const edit = (g: PurchaGaadi) => editEntry({ kind: 'gaadi', gaadi: { truckId: g.truckId, number: g.number, supplier: g.supplier, location: g.location, freightPaise: g.freightPaise, qualities: [] } })
 
   useExport(data ? () => ({
     style: 'book' as const, title: t('Purcha'), dateLine: dayRange(data.from, data.to), file: fileName('Purcha', data.from, data.to),
@@ -601,6 +828,7 @@ export function Purcha({ shopId }: { shopId: string }) {
                     <tr key={g.truckId} data-row tabIndex={0} onClick={() => open(g)} onKeyDown={(e) => { if (e.key === 'Enter') open(g) }}>
                       <td className="opt-col muted">{shortDate(g.date)}</td>
                       <td className="main-col"><b className="name">{g.number}</b> <span className="muted">{g.supplier}</span>
+                        {editable && <> <button type="button" className="btn line sm" onClick={(e) => { e.stopPropagation(); edit(g) }} onKeyDown={(e) => e.stopPropagation()}>{t('Badlein')}</button></>}
                         <small><span className="show-sm">{shortDate(g.date)} · {maal(g)}</span>{g.location ? <span className="hide-sm">{g.location}</span> : null}</small></td>
                       <td className="opt-col">{maal(g)}<small className="muted" style={{ display: 'block' }}>{kgText(g.kg)}</small></td>
                       <td className="num opt-col">{count(g.boxes)}</td>

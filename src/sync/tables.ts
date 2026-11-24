@@ -232,6 +232,13 @@ export const SYNC_TABLES: Record<string, TableDef> = {
     kind: 'fact',
     row: z.object({ id, created_at: at, bill_id: id }),
   },
+  // Nariyal "Scan galat tha, hatayein" (089): a Maal diya scan made by mistake, taken back. One row
+  // cancels one nariyal_returns row (return_id); the parchi counts as not scanned again and can be
+  // scanned again. Nariyal shops only (sync.service).
+  nariyal_return_voids: {
+    kind: 'fact',
+    row: z.object({ id, created_at: at, return_id: id, bill_id: id, staff_name: text(80) }),
+  },
   // The WhatsApp number a party's beejak goes to, per supplier name (angoor).
   supplier_phones: {
     kind: 'master',

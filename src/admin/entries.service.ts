@@ -34,6 +34,18 @@ function fy(): string {
   const start = d.getUTCMonth() >= 3 ? d.getUTCFullYear() : d.getUTCFullYear() - 1;
   return `${String(start % 100).padStart(2, '0')}${String((start + 1) % 100).padStart(2, '0')}`;
 }
+/** The walk-in names that are nobody's khata (Free is exempt: it carries no money). */
+export const WALK_IN_NAME = /^\s*(cash|bank)\s*$/i;
+/** A parchi left on udhaar for the walk-in Cash or Bank is refused, as the app's parchi screen refuses it. */
+export const WALK_IN_UDHAAR = 'Udhaar sirf grahak ke naam par: naam likhein ya poora paisa lein';
+/**
+ * What a walk-in Cash / Bank parchi may be left short by without counting as udhaar: the paise a
+ * counter drops when it takes round rupees (Rs 3,830 for Rs 3,830.40). Live books hold such slips.
+ */
+export const WALK_IN_SLACK_PAISE = 100;
+/** True when a walk-in slip is short by more than the round-off slack, i.e. would leave real udhaar on nobody. */
+export const walkInLeavesUdhaar = (buyerName: string, billPaise: number, paidPaise: number) =>
+  WALK_IN_NAME.test(buyerName) && billPaise - paidPaise >= WALK_IN_SLACK_PAISE;
 export const payModeCode = (cash: number, upi: number) => (cash > 0 && upi > 0 ? 'mixed' : upi > 0 ? 'upi' : cash > 0 ? 'cash' : 'credit');
 
 export type Grade = '1' | '2' | '3' | 'mix';
@@ -76,6 +88,34 @@ export type SupplierPaymentInput = { supplier: string; mode: 'cash' | 'office' |
 async function notPickedUp(tx: Tx, billId: string) {
   const r = await tx.query<{ n: string }>(`SELECT COALESCE(SUM(qty), 0) AS n FROM pickups WHERE bill_id = $1`, [billId]);
   if (n(r.rows[0].n) > 0) throw new UnprocessableEntityException('Maal uth chuka hai — yeh parchi ab nahi badlegi');
+}
+
+/**
+ * Nariyal: a parchi scanned back (Parchi wapas) is final, as in the app (Store.isNariyalReturned):
+ * its own scan, or one on the parchi it was corrected from (same slip number, 'edited' void). A
+ * scan taken back ("Scan galat tha", nariyal_return_voids) no longer counts.
+ */
+async function notScannedBack(tx: Tx, billId: string) {
+  const r = await tx.query(
+    `SELECT 1 FROM nariyal_returns r
+     WHERE (r.bill_id = $1 OR r.bill_id IN (SELECT v.bill_id FROM bill_voids v JOIN bills b ON b.slip_no = v.slip_no
+                                            WHERE v.reason = 'edited' AND b.id = $1))
+       AND NOT EXISTS (SELECT 1 FROM nariyal_return_voids x WHERE x.return_id = r.id)
+     LIMIT 1`, [billId]);
+  if (r.rowCount) throw new UnprocessableEntityException('Parchi scan ho chuki — ab nahi badlegi');
+}
+
+/** A refund that can't come out of the slip's own day: an earlier day, or one already closed (Store.isLateRefund). */
+async function isLateRefund(tx: Tx, day: string): Promise<boolean> {
+  if (day < todayIst()) return true;
+  return !!(await tx.query(`SELECT 1 FROM day_closes WHERE business_date = $1::date LIMIT 1`, [day])).rowCount;
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** "Parchi #N refund (22 Nov ki)": the app's late-refund line (Store.lateRefundNote); the app keys the old day on it. */
+export function lateRefundNote(slipNo: number, day: string): string {
+  const [, m, d] = day.slice(0, 10).split('-');
+  return `Parchi #${slipNo} refund (${d} ${MONTHS[Number(m) - 1] ?? m} ki)`;
 }
 
 @Injectable()
@@ -175,6 +215,7 @@ export class EntriesService {
       const b = await liveBill(tx, billId);
       if ((await collectedOn(tx, billId)).rows.length) throw new UnprocessableEntityException('Is parchi par vasooli ho chuki hai — badal nahi sakte, sirf hata sakte hain');
       await notPickedUp(tx, billId);
+      await notScannedBack(tx, billId);
       return b;
     });
     return this.writeParchi(p, shopId, input, old);
@@ -243,7 +284,10 @@ export class EntriesService {
     else if (input.pay === 'upi') upi = goods;
     else if (input.pay === 'split') { cash = input.cashPaise ?? 0; upi = input.upiPaise ?? 0; }
     if (cash + upi > goods) throw new BadRequestException('Jama rakam parchi se zyada hai');
-    if (!buyerId && cash + upi < goods && !free) throw new BadRequestException('Udhaar ke liye grahak chunein');
+    if (!free && walkInLeavesUdhaar(buyerName, goods, cash + upi)) throw new UnprocessableEntityException(WALK_IN_UDHAAR);
+    // A walk-in short by only the round-off paise is a paid slip, not udhaar.
+    if (!buyerId && cash + upi < goods && !free && !(WALK_IN_NAME.test(buyerName) && goods - cash - upi < WALK_IN_SLACK_PAISE))
+      throw new BadRequestException('Udhaar ke liye grahak chunein');
     const chosen = free ? 'free' : input.pay === 'split' ? null : input.pay;
     const payMode = chosen && (goods === 0 || chosen === 'after') ? chosen : payModeCode(cash, upi);
     const packed = input.packing !== 'loose';
@@ -354,6 +398,7 @@ export class EntriesService {
     else if (input.pay === 'upi') upi = total;
     else if (input.pay === 'split') { cash = input.cashPaise ?? 0; upi = input.upiPaise ?? 0; }
     if (cash + upi > total) throw new BadRequestException('Jama rakam parchi se zyada hai');
+    if (!free && walkInLeavesUdhaar(buyerName, total, cash + upi)) throw new UnprocessableEntityException(WALK_IN_UDHAAR);
     if (!buyerId && cash + upi < total && !free) throw new BadRequestException('Udhaar ke liye grahak chunein');
     const chosen = free ? 'free' : input.pay === 'split' ? null : input.pay;
     const payMode = chosen && (total === 0 || chosen === 'after') ? chosen : payModeCode(cash, upi);
@@ -428,10 +473,14 @@ export class EntriesService {
    */
   async voidBill(phone: string, shopId: string, billId: string, reason: 'deleted' | 'refunded' | 'advance') {
     const p = await this.device(phone, shopId);
-    const { b, later, receiptNo } = await this.db.withShop(shopId, async (tx) => {
+    const { b, later, receiptNo, late } = await this.db.withShop(shopId, async (tx) => {
       const b = await liveBill(tx, billId);
       await notPickedUp(tx, billId);
-      return { b, later: await collectedOn(tx, billId), receiptNo: await nextNumber(tx, 'collections', 'receipt_no', 'collection_voids') };
+      await notScannedBack(tx, billId);
+      return {
+        b, later: await collectedOn(tx, billId), receiptNo: await nextNumber(tx, 'collections', 'receipt_no', 'collection_voids'),
+        late: await isLateRefund(tx, b.day.slice(0, 10)),
+      };
     });
     const [cash, upi] = billMoney(b);
     const money = n(b.paid_paise) + later.cash + later.upi;
@@ -448,9 +497,17 @@ export class EntriesService {
         id: uuidv7(), created_at: now, collection_id: c.id, receipt_no: c.receipt_no, reason: 'deleted',
       } });
       const upiBack = upi + later.upi;
-      if (upiBack > 0) {
+      const party = b.buyer_id ? b.buyer_name : '';
+      if (late) {
+        // An earlier or closed day keeps its figures (the app reads them off the void's snapshot):
+        // everything goes back from today's galla in one line, which also tells the app that the
+        // old day keeps the slip. All of it in cash, as below.
+        items.push({ table: 'daybook_entries', txn, row: {
+          id: uuidv7(), created_at: now, updated_at: now, direction: 'out', mode: 'cash', category: 'aur_gaya', party_name: party,
+          note: lateRefundNote(b.slip_no ?? 0, b.day), amount_paise: money, business_date: todayIst(), hidden: false,
+        } });
+      } else if (upiBack > 0) {
         const slip = `Parchi #${b.slip_no ?? 0}`;
-        const party = b.buyer_id ? b.buyer_name : '';
         for (const [direction, mode, category, note] of [['in', 'upi', 'aur_aaya', `${slip} wapas · UPI aaya tha`], ['out', 'cash', 'aur_gaya', `${slip} refund · cash diya`]]) {
           items.push({ table: 'daybook_entries', txn, row: {
             id: uuidv7(), created_at: now, updated_at: now, direction, mode, category, party_name: party, note,
@@ -472,7 +529,7 @@ export class EntriesService {
     }
     const results = await this.push(p, shopId, items);
     return {
-      billId: b.id, slipNo: b.slip_no, reason,
+      billId: b.id, slipNo: b.slip_no, reason, late: reason === 'refunded' && late,
       // What goes back over the counter: all of it in cash (the UPI part stays in the bank).
       refundPaise: reason === 'refunded' ? money : 0,
       advance: advance && { ...advance, receiptNo: results.find((r) => r.id === advance!.id)?.renumbered?.to ?? advance.receiptNo, amountPaise: cash + upi },
@@ -851,29 +908,40 @@ export class EntriesService {
    * A grapes gaadi changed after it came, as the app's Gaadi screen does: number, supplier, where
    * it stands and bhada on the gaadi itself; a quality's boxes by the difference — more boxes as
    * another lot line at its own bhav and kg, fewer as a correction — and a new quality as a new lot.
+   *
+   * Nariyal and amrud gaadis (the website's plain gaadi form): the number (and supplier) only, with
+   * no lots — their grades and marks are the app's to change. Bhada and place left out of the
+   * request stay as they are; the truck row's nariyal-only columns (deal, Bada) are not sent, so
+   * the sync keeps them.
    */
   async editGaadi(phone: string, shopId: string, truckId: string, input: GaadiInput) {
     const number = input.number.toUpperCase().replace(/\s+/g, '');
     if (!number) throw new BadRequestException('Gaadi number daalein');
-    if (!input.supplier.trim()) throw new BadRequestException('Supplier ka naam daalein');
     const p = await this.device(phone, shopId);
     const now = new Date().toISOString();
-    const { truck, have, brands } = await this.db.withShop(shopId, async (tx) => {
-      const truck = (await tx.query<{ id: string; created_at: Date; arrived_at: Date; labour_paise: string; commission_paise: string; closed_at: Date | null }>(
-        `SELECT id, created_at, arrived_at, labour_paise, commission_paise, closed_at FROM trucks WHERE id = $1`, [truckId])).rows[0];
+    const { truck, have, brands, commodity } = await this.db.withShop(shopId, async (tx) => {
+      const truck = (await tx.query<{ id: string; created_at: Date; arrived_at: Date; supplier: string; freight_paise: string; location: string; labour_paise: string; commission_paise: string; closed_at: Date | null }>(
+        `SELECT id, created_at, arrived_at, supplier, freight_paise, location, labour_paise, commission_paise, closed_at FROM trucks WHERE id = $1`, [truckId])).rows[0];
       if (!truck) throw new NotFoundException('Gaadi nahi mili');
+      const commodity = (await tx.query<{ commodity: string }>(`SELECT commodity FROM shops WHERE id = $1`, [shopId])).rows[0]?.commodity ?? 'nariyal';
       const have = (await tx.query<{ brand_id: string; qty: string; rate: string; box_grams: number }>(
         `SELECT g.brand_id, SUM(g.received_qty) - COALESCE((SELECT SUM(qty) FROM spoilage s WHERE s.truck_id = $1 AND s.brand_id = g.brand_id AND s.kind = 'correction'), 0)
                   - ${STORE_BACK('$1', 'g.brand_id')} AS qty,
                 (array_agg(g.rate_paise ORDER BY g.created_at DESC))[1] AS rate, MAX(g.box_grams) AS box_grams
          FROM truck_grades g WHERE g.truck_id = $1 GROUP BY g.brand_id`, [truckId])).rows;
       const brands = (await tx.query<{ id: string; name: string; sort_order: number }>(`SELECT id, name, sort_order FROM brands`)).rows;
-      return { truck, have, brands };
+      return { truck, have, brands, commodity };
     });
+    const grapesOrCheeku = isAngoor(commodity) || isCheeku(commodity);
+    // A supplier is required where the gaadi is the party's (angoor, cheeku, amrud); a nariyal
+    // gaadi entered without one may stay without one.
+    if (!input.supplier.trim() && (commodity !== 'nariyal' || truck.supplier.trim())) throw new BadRequestException('Supplier ka naam daalein');
+    // Nariyal grades and amrud marks are not what this form's lots know (one grade a quality).
+    if (!grapesOrCheeku && input.lots.length) throw new BadRequestException('Is gaadi ka maal app se badlein');
     const items: PushItem[] = [{ table: 'trucks', txn: uuidv7(), row: {
       id: truck.id, created_at: truck.created_at.toISOString(), updated_at: now, number, supplier: input.supplier.trim(), arrived_at: truck.arrived_at.toISOString(),
-      freight_paise: input.freightPaise ?? 0, labour_paise: n(truck.labour_paise), commission_paise: n(truck.commission_paise),
-      closed_at: truck.closed_at?.toISOString() ?? null, location: (input.location ?? '').trim().slice(0, 80),
+      freight_paise: input.freightPaise ?? n(truck.freight_paise), labour_paise: n(truck.labour_paise), commission_paise: n(truck.commission_paise),
+      closed_at: truck.closed_at?.toISOString() ?? null, location: (input.location ?? truck.location ?? '').trim().slice(0, 80),
     } }];
     const day = todayIst();
     let order = brands.reduce((m, b) => Math.max(m, b.sort_order), 0) + 1;
@@ -1074,6 +1142,137 @@ export class EntriesService {
     return { ...slip, picked: slip.picked + input.qty, left: slip.left - input.qty };
   }
 
+  // ---------------------------------------------------------------- nariyal dispatch (parchi wapas)
+
+  /**
+   * Nariyal Dispatch, as the app's Hisab > Dispatch draws it: each live parchi of the days with
+   * its dana and gaadi(s), and whether it is scanned back (Maal diya) yet. A scan counts while it
+   * is not taken back (nariyal_return_voids); a parchi corrected after its scan (same number,
+   * 'edited' void) still counts as scanned, exactly as Store.nariyalScanned on the terminal.
+   */
+  async nariyalDispatch(shopId: string, from: string, to: string) {
+    return this.db.withShop(shopId, async (tx) => {
+      const rows = (await tx.query<{ id: string; slip_no: number | null; buyer_name: string; day: string; created_at: Date; qty: string;
+        scanned_at: Date | null; scanned_by: string | null }>(
+        `WITH live_ret AS (
+           SELECT r.id, r.bill_id, r.created_at, r.device_id FROM nariyal_returns r
+           WHERE NOT EXISTS (SELECT 1 FROM nariyal_return_voids rv WHERE rv.return_id = r.id)),
+         lb AS (
+           SELECT b.* FROM bills b WHERE b.business_date BETWEEN $1::date AND $2::date
+             AND NOT EXISTS (SELECT 1 FROM bill_voids v WHERE v.bill_id = b.id))
+         SELECT lb.id, lb.slip_no, lb.buyer_name, lb.business_date::text AS day, lb.created_at,
+                (SELECT COALESCE(SUM(l.qty), 0) FROM bill_lines l WHERE l.bill_id = lb.id) AS qty,
+                s.created_at AS scanned_at, s.by AS scanned_by
+         FROM lb
+         LEFT JOIN LATERAL (
+           SELECT r.created_at, CONCAT_WS(' · ', d.code, NULLIF(d.label, '')) AS by FROM live_ret r
+           LEFT JOIN devices d ON d.id = r.device_id
+           WHERE r.bill_id = lb.id OR (lb.slip_no IS NOT NULL AND r.bill_id IN
+             (SELECT v.bill_id FROM bill_voids v WHERE v.slip_no = lb.slip_no AND v.reason = 'edited'))
+           ORDER BY r.created_at DESC LIMIT 1) s ON true
+         ORDER BY lb.business_date, COALESCE(lb.slip_no, 0), lb.created_at`, [from, to])).rows;
+      const ids = rows.map((r) => r.id);
+      const gaadis = ids.length ? (await tx.query<{ bill_id: string; truck_id: string; number: string | null; supplier: string | null }>(
+        `SELECT l.bill_id, t.id AS truck_id, t.number, t.supplier FROM bill_lines l JOIN trucks t ON t.id = l.truck_id
+         WHERE l.bill_id = ANY($1::uuid[]) GROUP BY l.bill_id, t.id, t.number, t.supplier ORDER BY MIN(l.created_at)`, [ids])).rows : [];
+      const byBill = new Map<string, { truckId: string; name: string }[]>();
+      for (const g of gaadis) {
+        const name = g.number && g.number.trim() && g.number !== '-' ? g.number : (g.supplier ?? '');
+        byBill.set(g.bill_id, [...(byBill.get(g.bill_id) ?? []), { truckId: g.truck_id, name }]);
+      }
+      const slips = rows.map((r) => ({
+        billId: r.id, slipNo: r.slip_no, buyer: r.buyer_name, date: r.day, at: r.created_at.toISOString(), qty: Number(r.qty),
+        gaadis: byBill.get(r.id) ?? [], scanned: r.scanned_at != null, scannedAt: r.scanned_at?.toISOString() ?? null, scannedBy: r.scanned_by ?? '',
+      }));
+      const done = slips.filter((s) => s.scanned);
+      const dana = slips.reduce((a, s) => a + s.qty, 0), danaScanned = done.reduce((a, s) => a + s.qty, 0);
+      return { from, to, slips, totals: { slips: slips.length, scanned: done.length, missing: slips.length - done.length, dana, danaScanned, danaMissing: dana - danaScanned } };
+    });
+  }
+
+  /**
+   * A nariyal parchi from what the scanner (or the counter) gives: its QR (the bill id), the
+   * barcode printed on it (20 digits: the id's last 16 hex digits as a number), or its number.
+   * A parchi corrected since is followed to the one now standing under its number.
+   */
+  async nariyalSlip(shopId: string, code: string) {
+    return this.db.withShop(shopId, async (tx) => {
+      const c = code.trim();
+      let id: string | null = /^[0-9a-f-]{36}$/i.test(c) ? c.toLowerCase() : null;
+      if (!id && /^\d{20}$/.test(c)) {
+        const hex = BigInt(c).toString(16);
+        if (hex.length <= 16) {
+          const h = hex.padStart(16, '0');
+          const tail = `%-${h.slice(0, 4)}-${h.slice(4)}`;
+          id = (await tx.query<{ id: string }>(`SELECT id FROM bills WHERE id::text LIKE $1 LIMIT 1`, [tail])).rows[0]?.id ?? null;
+        }
+        if (!id) throw new NotFoundException('Yeh parchi nahi mili');
+      }
+      const slipNo = id ? (await tx.query<{ slip_no: number | null }>(`SELECT slip_no FROM bills WHERE id = $1`, [id])).rows[0]?.slip_no ?? null
+        : /^\d{1,7}$/.test(c) ? Number(c) : null;
+      if (id == null && slipNo == null) throw new NotFoundException('Yeh parchi nahi mili');
+      const live = (await tx.query<{ id: string }>(
+        `SELECT b.id FROM bills b WHERE NOT EXISTS (SELECT 1 FROM bill_voids v WHERE v.bill_id = b.id)
+           AND (b.id::text = $1 OR (b.slip_no IS NOT NULL AND b.slip_no = $2))
+         ORDER BY (b.id::text = $1) DESC, b.created_at DESC LIMIT 1`, [id ?? '', slipNo])).rows[0];
+      if (!live) {
+        const cancelled = id ? (await tx.query(`SELECT 1 FROM bill_voids WHERE bill_id = $1 AND reason <> 'edited'`, [id])).rowCount : 0;
+        throw new NotFoundException(cancelled ? 'Yeh parchi cancel hai' : 'Yeh parchi nahi mili');
+      }
+      const b = (await tx.query<{ id: string; slip_no: number | null; buyer_name: string; day: string; created_at: Date }>(
+        `SELECT id, slip_no, buyer_name, business_date::text AS day, created_at FROM bills WHERE id = $1`, [live.id])).rows[0];
+      const lines = (await tx.query<{ brand: string | null; grade: string | null; leak: boolean | null; number: string | null; supplier: string | null; qty: string }>(
+        `SELECT br.name AS brand, l.grade, l.leak, t.number, t.supplier, SUM(l.qty) AS qty FROM bill_lines l
+         LEFT JOIN brands br ON br.id = l.brand_id LEFT JOIN trucks t ON t.id = l.truck_id
+         WHERE l.bill_id = $1 GROUP BY br.name, l.grade, l.leak, t.number, t.supplier ORDER BY t.number, br.name`, [b.id])).rows;
+      const scan = await this.liveScans(tx, b.id, b.slip_no);
+      const gaadi = [...new Set(lines.map((l) => [l.number && l.number !== '-' ? l.number : '', l.supplier ?? ''].filter(Boolean).join(' · ')).filter(Boolean))].join(', ');
+      return {
+        billId: b.id, slipNo: b.slip_no, buyer: b.buyer_name, date: b.day, at: b.created_at.toISOString(), gaadi,
+        qty: lines.reduce((a, l) => a + Number(l.qty), 0),
+        lines: lines.map((l) => ({ maal: [l.brand ?? '', l.leak ? 'Leak' : gradeLabel(l.grade)].filter(Boolean).join(' · '), qty: Number(l.qty) })),
+        scanned: scan.length > 0, scannedAt: scan[0]?.at ?? null,
+      };
+    });
+  }
+
+  /** The live (not taken back) scans that make a parchi count: its own, or the parchi it was corrected from. */
+  private async liveScans(tx: Tx, billId: string, slipNo: number | null) {
+    return (await tx.query<{ id: string; bill_id: string; created_at: Date }>(
+      `SELECT r.id, r.bill_id, r.created_at FROM nariyal_returns r
+       WHERE NOT EXISTS (SELECT 1 FROM nariyal_return_voids rv WHERE rv.return_id = r.id)
+         AND (r.bill_id = $1 OR ($2::int IS NOT NULL AND r.bill_id IN
+           (SELECT v.bill_id FROM bill_voids v WHERE v.slip_no = $2::int AND v.reason = 'edited')))
+       ORDER BY r.created_at DESC`, [billId, slipNo])).rows.map((r) => ({ id: r.id, billId: r.bill_id, at: r.created_at.toISOString() }));
+  }
+
+  /** Maal diya from the website: one nariyal_returns row, as the app's scanner writes it. A parchi scanned before saves nothing. */
+  async nariyalReturn(phone: string, shopId: string, billId: string) {
+    const slip = await this.nariyalSlip(shopId, billId);
+    if (slip.billId !== billId) throw new BadRequestException('Parchi badal gayi hai, dobara scan karein');
+    if (slip.scanned) return { ...slip, already: true };
+    const p = await this.device(phone, shopId);
+    const at = new Date().toISOString();
+    await this.push(p, shopId, [{ table: 'nariyal_returns', txn: uuidv7(), row: { id: uuidv7(), created_at: at, bill_id: billId } }]);
+    return { ...slip, scanned: true, scannedAt: at, already: false };
+  }
+
+  /** "Scan galat tha": each live scan behind the parchi gets a void, as Store.unscanNariyal on the terminal. */
+  async nariyalUnscan(phone: string, shopId: string, billId: string) {
+    const scans = await this.db.withShop(shopId, async (tx) => {
+      const b = (await tx.query<{ slip_no: number | null }>(`SELECT slip_no FROM bills WHERE id = $1`, [billId])).rows[0];
+      if (!b) throw new NotFoundException('Yeh parchi nahi mili');
+      return this.liveScans(tx, billId, b.slip_no);
+    });
+    if (!scans.length) throw new BadRequestException('Yeh parchi scan hi nahi hui');
+    const p = await this.device(phone, shopId);
+    const name = (await this.db.query<{ name: string | null }>(`SELECT name FROM users WHERE phone = $1`, [phone]))[0]?.name?.trim() || phone;
+    const at = new Date().toISOString(), txn = uuidv7();
+    await this.push(p, shopId, scans.map((s) => ({ table: 'nariyal_return_voids', txn,
+      row: { id: uuidv7(), created_at: at, return_id: s.id, bill_id: s.billId, staff_name: name.slice(0, 80) } })));
+    return { ok: true };
+  }
+
   /** Broken boxes on a slip already handed over, for the accountant to write at a new bhav — as the app's scanner raises it. */
   async reportBreakage(phone: string, shopId: string, input: { billId: string; brandId: string | null; truckId: string | null; qty: number; note?: string }) {
     const slip = await this.pickupSlip(shopId, input.billId);
@@ -1245,4 +1444,9 @@ function laddanCols(b: LaddanFields) {
     email: b.email === undefined ? undefined : b.email.trim().toLowerCase(), area: up(b.area), bank_details: b.bankDetails === undefined ? undefined : b.bankDetails.trim(),
   };
   return Object.fromEntries(Object.entries(cols).filter(([, v]) => v !== undefined));
+}
+
+/** Grade as the nariyal slip writes it. */
+function gradeLabel(g: string | null): string {
+  switch ((g ?? '').toUpperCase()) { case '1': return 'I'; case '2': return 'II'; case '3': return 'III'; case 'MIX': return 'Mix'; default: return g ?? '' }
 }

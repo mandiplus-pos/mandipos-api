@@ -165,7 +165,7 @@ function Preview({ doc, firm, auto, onClose }: { doc: ExportDoc; firm: Firm; aut
                         ? <tr key={j} className="band"><td colSpan={cols.length}>{r.cells[0]}</td></tr>
                         : (
                           <tr key={j} className={[r.bold && 'b', r.strike && 'strike'].filter(Boolean).join(' ') || undefined}>
-                            {r.cells.map((c, k) => <td key={k} className={cols[k]?.num ? 'num' : undefined}>{c}</td>)}
+                            {r.cells.map((c, k) => <td key={k} className={[cols[k]?.num && 'num', r.boldCells?.includes(k) && 'b'].filter(Boolean).join(' ') || undefined}>{c}</td>)}
                           </tr>
                         ))}
                     </tbody>

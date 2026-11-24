@@ -481,6 +481,26 @@ export const INSIGHTS: Record<string, readonly [string, string]> = {
   // Reports menu: General Ledger, Trial Balance, Ledger Multiple, Chithi / Schedule, big transactions, Sale Purchase, Purcha, Backup.
   'Reports': ['Reports', 'रिपोर्ट'],
   'Trial Balance': ['Trial Balance', 'ट्रायल बैलेंस'],
+  // Balance Sheet and P&L (Books).
+  'Balance Sheet': ['Balance Sheet', 'बैलेंस शीट'],
+  'P&L': ['Profit & Loss', 'लाभ-हानि'],
+  'Lena (assets)': ['Assets', 'लेना (एसेट)'],
+  'Dena (liabilities)': ['Liabilities', 'देना (लायबिलिटी)'],
+  'LENA (ASSETS)': ['ASSETS', 'लेना (एसेट)'],
+  'DENA (LIABILITIES)': ['LIABILITIES', 'देना (लायबिलिटी)'],
+  'Kul lena': ['Total assets', 'कुल लेना'],
+  'Kul dena': ['Total liabilities', 'कुल देना'],
+  'Is saal ka munafa': ['Profit this year', 'इस साल का मुनाफ़ा'],
+  'Trial Balance se bana': ['Built from the Trial Balance', 'ट्रायल बैलेंस से बना'],
+  'Trial Balance mein farq': ['Trial Balance does not tally', 'ट्रायल बैलेंस में फ़र्क'],
+  'Balance sheet tally nahi hua': ['Balance sheet does not tally', 'बैलेंस शीट टैली नहीं हुई'],
+  'MAHINA-WISE': ['MONTH-WISE', 'महीना-वार'],
+  'Maal stock ki keemat isme nahi: poori kharid Purchase mein hai. Is saal ka munafa = bikri + aamdani − kharid − kharcha.':
+    ['Stock in hand is not valued here: all purchases sit in Purchase. Profit this year = sales + income − purchase − expenses.',
+      'माल स्टॉक की कीमत इसमें नहीं: पूरी खरीद Purchase में है। इस साल का मुनाफ़ा = बिक्री + आमदनी − खरीद − खर्चा।'],
+  'Munafa report jaisa hi: laagat gaadi ke har nag ki (kharid + bhada + mazdoori + commission), sirf bike aur phoote maal ki.':
+    ['Same as the Profit report: cost per piece of each truck (purchase + freight + labour + commission), only for goods sold or spoiled.',
+      'मुनाफ़ा रिपोर्ट जैसा ही: लागत गाड़ी के हर नग की (खरीद + भाड़ा + मज़दूरी + कमीशन), सिर्फ बिके और फूटे माल की।'],
   'Ledger Multiple': ['Ledger Multiple', 'लेजर मल्टीपल'],
   'Chithi / Schedule': ['Letter / Schedule', 'चिट्ठी / शेड्यूल'],
   'Bade len-den': ['Large transactions', 'बड़े लेन-देन'],

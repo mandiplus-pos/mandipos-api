@@ -37,6 +37,13 @@ export function DayBook({ shopId }: { shopId: string }) {
   const pick = (f: Filter) => { setFilter(f); setHashQuery({ ...Object.fromEntries(hashQuery()), f }) }
   const live = (data ?? []).filter((e) => !e.voided)
   const sum = (pred: (e: DayEntry) => boolean) => live.filter(pred).reduce((t, e) => t + e.amountPaise, 0)
+  // The parchis by how they were paid: cash and UPI at the counter, and what each wrote on udhaar.
+  // They keep a nariyal slip's rickshaw fare (it was paid, or written, with the slip), as the app's Hisab.
+  const slipPart = (k: 'cashPaise' | 'upiPaise' | 'udhaarPaise' | 'rikshawPaise') => live.filter((e) => e.kind === 'slip').reduce((t, e) => t + (e[k] ?? 0), 0)
+  // Parchi is the bikri: the slips less the rickshaw fare, which goes to the rickshaw wala (the app's
+  // Kul bikri: cash + UPI + udhaar − rikshaw). The fare has its own card so the money is not hidden.
+  const rikshaw = slipPart('rikshawPaise')
+  const parchi = sum((e) => e.kind === 'slip') - rikshaw
   const shown = (data ?? []).filter((e) => filter === 'sab' || (filter === 'bikri' && e.kind === 'slip') || (filter === 'vasooli' && e.kind === 'payment') || (filter === 'kharcha' && (e.kind === 'in' || e.kind === 'out')))
 
   useExport(data ? () => {
@@ -46,11 +53,12 @@ export function DayBook({ shopId }: { shopId: string }) {
       if (period.from !== period.to && e.date !== day) rows.push({ kind: 'band', cells: [longDay(e.date)] })
       day = e.date
       const v = describe(e, unit)
-      rows.push({ strike: !!e.voided, cells: [time(e.at), v.type, v.no, [v.name, v.detail].filter(Boolean).join(' · '), e.nags ? count(e.nags) : '', v.amount, e.voided ? '' : v.pay ?? ''] })
+      rows.push({ strike: !!e.voided, cells: [time(e.at), v.type, v.no, [v.name, v.detail].filter(Boolean).join(' · '), e.nags ? count(e.nags) : '', v.amount, e.voided ? '' : [v.pay, v.jama].filter(Boolean).join(' · ')] })
     }
     return {
       style: 'book' as const, title: t('Day Book'), dateLine: dayRange(period.from, period.to), file: fileName(t('Day Book'), period.from, period.to),
-      summary: [[t('Parchi'), rs(sum((e) => e.kind === 'slip'))], [t('Vasooli'), rs(sum((e) => e.kind === 'payment'))], [t('Kharcha'), rs(sum((e) => e.kind === 'out' && !NOT_KHARCHA.has(e.title)))]],
+      summary: [[t('Parchi'), rs(parchi)], [t('Cash bikri'), rs(slipPart('cashPaise'))], [t('UPI bikri'), rs(slipPart('upiPaise'))],
+        [t('Udhaar bikri'), rs(slipPart('udhaarPaise'))], ...(rikshaw > 0 ? [[t('Rikshaw (rickshaw wale ka)'), rs(rikshaw)] as [string, string]] : []), [t('Vasooli'), rs(sum((e) => e.kind === 'payment'))], [t('Kharcha'), rs(sum((e) => e.kind === 'out' && !NOT_KHARCHA.has(e.title)))]],
       columns: [{ label: t('Samay') }, { label: t('Type') }, { label: t('No.') }, { label: t('Naam'), wide: true }, { label: t('Nag'), num: true }, { label: t('Rakam'), num: true }, { label: t('Payment') }],
       rows,
     }
@@ -68,7 +76,11 @@ export function DayBook({ shopId }: { shopId: string }) {
       {!data ? <Skeleton /> : (
         <div className={`stack${loading ? ' dim' : ''}`}>
           <div className="card sum">
-            <div><span className="lb">{t('Parchi')}</span><span className="v">{rupees(sum((e) => e.kind === 'slip'))}</span></div>
+            <div><span className="lb">{t('Parchi')}</span><span className="v">{rupees(parchi)}</span></div>
+            <div><span className="lb">{t('Cash bikri')}</span><span className="v">{rupees(slipPart('cashPaise'))}</span></div>
+            <div><span className="lb">{t('UPI bikri')}</span><span className="v">{rupees(slipPart('upiPaise'))}</span></div>
+            <div><span className="lb">{t('Udhaar bikri')}</span><span className="v due">{rupees(slipPart('udhaarPaise'))}</span></div>
+            {rikshaw > 0 && <div title={t('Grahak ne parchi ke saath diya, rickshaw wale ko jaata hai: bikri mein nahi')}><span className="lb">{t('Rikshaw (rickshaw wale ka)')}</span><span className="v">{rupees(rikshaw)}</span></div>}
             <div><span className="lb">{t('Vasooli')}</span><span className="v jama">{rupees(sum((e) => e.kind === 'payment'))}</span></div>
             <div><span className="lb">{t('Kharcha')}</span><span className="v">{rupees(sum((e) => e.kind === 'out' && !NOT_KHARCHA.has(e.title)))}</span></div>
             {sum((e) => e.kind === 'in' && !NOT_KHARCHA.has(e.title)) > 0 && <div><span className="lb">{t('Aaya')}</span><span className="v">{rupees(sum((e) => e.kind === 'in' && !NOT_KHARCHA.has(e.title)))}</span></div>}
@@ -117,14 +129,15 @@ export function EntryTable({ shopId, entries, multiDay, compact }: { shopId: str
                     <small>
                       <span className="show-sm">{time(e.at)} · {v.type}{v.no ? ` ${v.no}` : ''}{e.voided || v.detail ? ' · ' : ''}</span>
                       {e.voided ? <span className="due">{e.voided === 'edited' ? t('Badli') : t('Hatayi')}</span> : v.detail}
+                      {e.lateRefund && <span className="due"> · {t('Refund baad mein hua')}</span>}
                     </small>
                   </td>
                   {!compact && <td className="num opt-col muted">{e.nags ? count(e.nags) : ''}</td>}
                   <td className={`num amt-col money b${e.voided ? ' muted' : e.kind === 'payment' ? ' jama' : ''}`}>
                     {v.amount}
-                    <span className="sm-block">{v.pay && !e.voided && <span className={`chip ${v.payTone}`}>{v.pay}</span>}</span>
+                    <span className="sm-block">{v.pay && !e.voided && <span className={`chip ${v.payTone}`}>{v.pay}</span>}{v.jama && !e.voided && <JamaTag text={v.jama} />}</span>
                   </td>
-                  <td className="opt-col">{v.pay && !e.voided && <span className={`chip ${v.payTone}`}>{v.pay}</span>}</td>
+                  <td className="opt-col">{v.pay && !e.voided && <span className={`chip ${v.payTone}`}>{v.pay}</span>}{v.jama && !e.voided && <JamaTag text={v.jama} />}</td>
                 </tr>
               </Rows>
             )
@@ -134,6 +147,11 @@ export function EntryTable({ shopId, entries, multiDay, compact }: { shopId: str
       {compact && entries.length === 0 && <p className="empty">{t('Abhi koi entry nahi')}</p>}
     </div>
   )
+}
+
+/** "Jama se kata": the udhaar on a slip the grahak's earlier money (advance, on-account vasooli) already paid off. Display only. */
+function JamaTag({ text }: { text: string }) {
+  return <span className="chip green" style={{ marginLeft: 4 }} title={t('Grahak ke pehle diye paise (jama) se kata')}>{text}</span>
 }
 
 function Rows({ children }: { children: React.ReactNode }) { return <>{children}</> }
@@ -151,8 +169,13 @@ function describe(e: DayEntry, unit = '{n} nag') {
     const pay = e.payMode === 'free' ? 'Free' : parts.length > 1 ? 'Mixed' : parts[0] ?? 'Udhaar'
     return {
       type: t('Parchi'), tone: 'green', no: e.title.replace(/^Parchi /, ''), name: e.party || t('Cash'),
-      detail: [e.nags && t(unit, { n: count(e.nags) }), parts.length > 1 && [e.cashPaise && `${t('Cash')} ${rupees(e.cashPaise)}`, e.upiPaise && `UPI ${rupees(e.upiPaise)}`, e.udhaarPaise && `${t('Udhaar')} ${rupees(e.udhaarPaise)}`].filter(Boolean).join(' + '), e.staff].filter(Boolean).join(' · '),
+      detail: [e.nags && t(unit, { n: count(e.nags) }), parts.length > 1 && [e.cashPaise && `${t('Cash')} ${rupees(e.cashPaise)}`, e.upiPaise && `UPI ${rupees(e.upiPaise)}`, e.udhaarPaise && `${t('Udhaar')} ${rupees(e.udhaarPaise)}`].filter(Boolean).join(' + '),
+        // The amount is what the grahak paid; the rickshaw fare inside it is not bikri.
+        (e.rikshawPaise ?? 0) > 0 && `+ ${t('Rikshaw')} ${rupees(e.rikshawPaise!)}`, e.staff].filter(Boolean).join(' · '),
       amount: rupees(e.amountPaise), pay: t(pay), payTone: pay === 'Udhaar' ? 'amber' : pay === 'UPI' ? 'blue' : pay === 'Mixed' ? 'grey' : 'green',
+      // Covered in full by money given before the slip, or only part of it.
+      jama: e.udhaarPaise > 0 && (e.jamaPaise ?? 0) > 0
+        ? (e.jamaPaise! >= e.udhaarPaise ? t('Jama se kata') : t('Jama se kata {amt}', { amt: rupees(e.jamaPaise!) })) : '',
     }
   }
   if (e.kind === 'payment') {

@@ -97,13 +97,14 @@ export type Shop = {
 
 export type Device = { code: string | null; label: string; web: boolean; appVersion: string; phone: string; name: string; lastSeenAt: string | null; addedAt: string }
 export type ShopDetail = Omit<Shop, 'devices'> & {
-  team: { name: string; phone: string; role: 'admin' | 'accountant'; joinedAt: string }[]
+  team: { name: string; phone: string; role: 'admin' | 'accountant' | 'partner'; joinedAt: string }[]
   devices: Device[]
 }
 
 export type Summary = {
   from: string; to: string
-  salesPaise: number; slips: number; nags: number; cashPaise: number; upiPaise: number; creditLeftPaise: number
+  /** Nariyal: sales leave out the rickshaw fare (rikshawPaise, shown on its own); cash / UPI keep it. */
+  salesPaise: number; rikshawPaise: number; slips: number; nags: number; cashPaise: number; upiPaise: number; creditLeftPaise: number
   collectedCashPaise: number; collectedUpiPaise: number; collections: number
   labourPaise: number; spoiledNags: number; daybookInPaise: number; daybookOutPaise: number
   deletedSlips: number; deletedPaise: number
@@ -152,15 +153,23 @@ export type DayEntry = {
   kind: 'slip' | 'payment' | 'in' | 'out'; id: string; at: string; date: string
   title: string; party: string; buyerId: string | null; nags: number
   amountPaise: number; cashPaise: number; upiPaise: number; udhaarPaise: number
+  /** Nariyal slip: the rickshaw fare inside amountPaise (not bikri; the rickshaw wala's). */
+  rikshawPaise?: number
   payMode: string; staff: string; voided: string | null; note?: string; mode?: string
+  /** A slip refunded after its day: it still counts here, and the money went out on the refund's day. */
+  lateRefund?: boolean
+  /** A udhaar slip: how much of it the grahak's money given before it (advance, on-account vasooli) paid off. */
+  jamaPaise?: number
 }
 
-export type Me = { phone: string; admin: boolean; shopIds: string[] | null; labourShopIds?: string[] }
+export type Me = { phone: string; admin: boolean; shopIds: string[] | null; labourShopIds?: string[]; partnerShopIds?: string[] }
 export type Buckets = { d0_7: number; d8_30: number; d31: number }
+export type DashTotals = { salesPaise: number; rikshawPaise: number; slips: number; cashPaise: number; upiPaise: number; udhaarPaise: number; purchasePaise: number; gaadis: number }
 export type Dashboard = {
   from: string; to: string
-  now: { salesPaise: number; slips: number; purchasePaise: number; gaadis: number }
-  before: { salesPaise: number; slips: number; purchasePaise: number; gaadis: number }
+  /** cash/upi: paid at the counter on the period's slips; udhaar: what those slips wrote on credit (total less paid). */
+  now: DashTotals
+  before: DashTotals
   trend: { date: string; salesPaise: number; purchasePaise: number }[]
   receivables: Buckets & { duePaise: number; count: number }
   payables: Buckets & { duePaise: number; count: number }
@@ -174,8 +183,12 @@ export type CashBook = {
 }
 export type Outstanding = {
   totals: Buckets & { duePaise: number; count: number }
-  rows: (Buckets & { buyerId: string; name: string; phone: string; code: string; duePaise: number; oldestDays: number | null; lastSlipOn: string | null; lastPaidAt: string | null })[]
+  rows: (Buckets & { buyerId: string; name: string; phone: string; code: string; duePaise: number; oldestDays: number | null; lastSlipOn: string | null; lastPaidAt: string | null
+    /** What the open dues came to, and what has come off them (at the counter, vasooli): display only. */
+    billedPaise: number; receivedPaise: number; slips: OpenSlip[] })[]
 }
+/** A slip still open: Parchi [totalPaise] · mila [receivedPaise] · baaki [openPaise] (the app's Collections). */
+export type OpenSlip = { billId: string; slipNo: number | null; date: string; totalPaise: number; paidAtCounterPaise: number; collectedOnSlipPaise: number; receivedPaise: number; openPaise: number }
 export type Suppliers = {
   totals: Buckets & { duePaise: number; count: number }
   rows: (Buckets & { key: string; name: string; gaadis: number; openGaadis: number; openingPaise: number; purchasePaise: number; paidPaise: number; duePaise: number; lastAt: string | null })[]
